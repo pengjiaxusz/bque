@@ -1,0 +1,15 @@
+# PENGJ_TEMPLATE_START
+# --- common layer ---
+
+/node_modules
+.env
+.env.*
+!.env.example
+*.log
+
+/.omo/run-continuation
+
+# --- rust layer ---
+
+/target
+# PENGJ_TEMPLATE_END

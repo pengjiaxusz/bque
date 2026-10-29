@@ -1,0 +1,20 @@
+{
+  "name": "bque",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.6.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "prepare": "node -e \"try{require('child_process').execSync('lefthook install',{stdio:'inherit'})}catch{console.log('尚未 git init，跳过 lefthook 安装；可先 git init 再运行 pnpm lefthook:install')}\"",
+    "lefthook:install": "lefthook install",
+    "commitlint": "commitlint"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "latest",
+    "@commitlint/config-conventional": "latest",
+    "lefthook": "latest"
+  }
+}
