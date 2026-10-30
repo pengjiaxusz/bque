@@ -11,6 +11,8 @@
 | `cargo test --workspace` | `just test` | `bque run` | `Idle` |
 | `pnpm build` | `just build` (or `bque-runner.ps1 -Cmd "pnpm build"`) | `bque run` | `Idle` |
 | `cmake --build target/debug` | `just build` | `bque run` | `Idle` |
+| `ninja -C target/debug <target>` | `just test-build <target>` (or `bque-runner.ps1 -Cmd "ninja ..."`) | `bque run` | `Idle` |
+| `ctest --output-on-failure` | `just test` (or `run-tests.ps1`) | `bque run` | `Idle` |
 | `cargo bench` | `just bench` | `bque bench` | `High` (Freezes background builds) |
 | `pnpm bench` | `just bench` | `bque bench` | `High` (Freezes background builds) |
 | `cargo fmt` | `cargo fmt` (Direct) | **Bypass** | Foreground |

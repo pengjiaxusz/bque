@@ -31,7 +31,22 @@ See [references/usage-matrix.md](references/usage-matrix.md) for full scenario m
 
 ---
 
-## 🚀 2. Three Execution Tiers (Priority Order)
+## 🛑 2. Strictly Prohibited Raw Commands (Mandatory Wrappers)
+
+AI assistants are **STRICTLY PROHIBITED** from executing raw build or compiler commands directly in the terminal! Bypassing `bque` / `just` starves all CPU cores, freezes desktop interactivity, contaminates benchmark accuracy, and triggers Windows 4KB pipe deadlocks. Always convert raw commands into their wrapped forms:
+
+| Prohibited Raw Command (FORBIDDEN) | Hazards & Failure Modes | Mandatory Wrapped Alternative |
+| :--- | :--- | :--- |
+| ❌ `ninja -C <dir> <target>` / `ninja ...` | Consumes 100% CPU cores, freezes the system, causes worktree conflicts | `just test-build <target>` or `pwsh tools/bque-runner.ps1 -Cmd "ninja -C <dir> <target>"` or `bque run -- ninja -C <dir> <target>` |
+| ❌ `cmake --build <dir> ...` | Causes target lock collisions, starves foreground responsiveness | `pwsh tools/locked-cmake-build.ps1 ...` or `just build` or `pwsh tools/bque-runner.ps1 -Cmd "cmake --build ..."` |
+| ❌ `cargo build` / `cargo test` / `cargo clippy` | Cargo target directory lock collisions, heavy CPU contention | `just build` / `just test` / `just check` or `pwsh tools/bque-runner.ps1 -Cmd "cargo ..."` |
+| ❌ Raw Benchmark invocation (e.g. `ninja -C target/debug DuntingThumbnailPipelineBenchmark` or `./bench.exe`) | **Fatal Benchmark Corruption**: background builds pollute CPU cache, invalidating benchmark data | `just test-bench` or `pwsh tools/bque-runner.ps1 -Bench -Cmd "..."` or `bque bench -- ...` (auto-freezes background builds for 0% CPU disturbance) |
+| ❌ `ctest ...` / `<TestBinary>.exe` | Unthrottled multi-threaded test runner saturates CPU | `just test` or `pwsh tools/run-tests.ps1` or `pwsh tools/bque-runner.ps1 -Cmd "ctest ..."` |
+| ❌ `pnpm build` / `tsc` (in large frontend workspaces) | V8 engine multi-thread memory and CPU spikes | `just build` or `pwsh tools/bque-runner.ps1 -Cmd "pnpm build"` |
+
+---
+
+## 🚀 3. Three Execution Tiers (Priority Order)
 
 ### Tier 1: Unified `just` Entry (Recommended)
 Always check the repository's `justfile` first. Standard targets automatically invoke the bque runner:
@@ -65,7 +80,7 @@ bque clean
 
 ---
 
-## 🛡️ 3. Two Hard Ironclad Rules
+## 🛡️ 4. Two Hard Ironclad Rules
 
 1. **Pipeline Hygiene (Strictly Forbidden)**:
    - **FORBIDDEN**: Never pipe native console build commands into PowerShell truncation filters (e.g., `cargo test 2>&1 | Select-Object -First 100` # pipeline-hygiene: ok anti-pattern doc).
@@ -77,7 +92,7 @@ bque clean
 
 ---
 
-## 🔧 4. Environment & Installation
+## 🔧 5. Environment & Installation
 
 If `bque` is missing from system `PATH`, inspect and follow the installation guide:
 👉 See [references/install.md](references/install.md).
