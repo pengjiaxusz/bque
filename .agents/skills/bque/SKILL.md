@@ -19,13 +19,13 @@ A cross-worktree build queue and governor skill. Prevents multi-repository build
 
 | Scenario | Use bque? | Mode / Command | Reason |
 | :--- | :---: | :--- | :--- |
-| **Heavy Compilation** (`cargo build`, `cmake`, `ninja`, `pnpm build`, `tsc`, `xtask pack`) | **YES** | `just build` or `tools/bque-runner.ps1 -Cmd "<cmd>"` | Serializes builds, lowers process priority to `Idle` to avoid freezing the OS |
-| **Workspace Lint & Test** (`cargo check`, `cargo clippy`, `cargo test`, `vitest run`) | **YES** | `just check` / `just test` or `bque-runner.ps1 -Cmd "<cmd>"` | High CPU utilization tasks require queue mutual exclusion and background throttling |
-| **Benchmarks & Profiling** (`bench`, `perf`, timing probes) | **YES** | `just bench` or `tools/bque-runner.ps1 -Bench -Cmd "<cmd>"` | **Clean-room mode**: automatically freezes background builds to ensure 0% CPU disturbance |
-| **Nested / Recursive invocation** (`BQUE_ACTIVE_PID` set) | **NO** | Direct command (`& <cmd>`) | Already under bque governor supervision; avoids recursive queue deadlock |
+| **Heavy Compilation** (`cargo build`, `cmake`, `ninja`, `pnpm build`, `tsc`, `xtask pack`) | **YES** | `just build` or `bque run -- <cmd>` | Serializes builds, lowers process priority to `Idle` to avoid freezing the OS |
+| **Workspace Lint & Test** (`cargo check`, `cargo clippy`, `cargo test`, `vitest run`) | **YES** | `just check` / `just test` or `bque run -- <cmd>` | High CPU utilization tasks require queue mutual exclusion and background throttling |
+| **Benchmarks & Profiling** (`bench`, `perf`, timing probes) | **YES** | `just bench` or `bque bench -- <cmd>` | **Clean-room mode**: automatically freezes background builds to ensure 0% CPU disturbance |
+| **Nested / Recursive invocation** (`BQUE_ACTIVE_PID` set) | **NO** | Direct command (`& <cmd>`) or `bque run` (native auto-bypass) | Already under bque governor supervision; avoids recursive queue deadlock |
 | **Fast Formatting & Lint** (`cargo fmt`, single-file `prettier`/`eslint`) | **NO** | Direct command | Fast completion (<1s), negligible CPU usage, no need to queue |
 | **Git Operations** (`git status`, `commit`, `push`, `rebase`) | **NO** | Direct command | I/O-bound operational commands, must never queue behind builds |
-| **State Inspection** (`queue-status`, `queue-clean`) | **NO** | `just queue-status` / `just queue-clean` | Control and diagnostic tools must run immediately |
+| **State Inspection** (`queue-status`, `queue-clean`) | **NO** | `just queue-status` / `just queue-clean` or `bque status` | Control and diagnostic tools must run immediately |
 
 See [references/usage-matrix.md](references/usage-matrix.md) for full scenario matrix and command mappings.
 
@@ -37,19 +37,19 @@ AI assistants are **STRICTLY PROHIBITED** from executing raw build or compiler c
 
 | Prohibited Raw Command (FORBIDDEN) | Hazards & Failure Modes | Mandatory Wrapped Alternative |
 | :--- | :--- | :--- |
-| ❌ `ninja -C <dir> <target>` / `ninja ...` | Consumes 100% CPU cores, freezes the system, causes worktree conflicts | `just test-build <target>` or `pwsh tools/bque-runner.ps1 -Cmd "ninja -C <dir> <target>"` |
-| ❌ `cmake --build <dir> ...` | Causes target lock collisions, starves foreground responsiveness | `pwsh tools/locked-cmake-build.ps1 ...` or `just build` or `pwsh tools/bque-runner.ps1 -Cmd "cmake --build ..."` |
-| ❌ `cargo build` / `cargo test` / `cargo clippy` | Cargo target directory lock collisions, heavy CPU contention | `just build` / `just test` / `just check` or `pwsh tools/bque-runner.ps1 -Cmd "cargo ..."` |
-| ❌ Raw Benchmark invocation (e.g. `ninja -C target/debug DuntingThumbnailPipelineBenchmark` or `./bench.exe`) | **Fatal Benchmark Corruption**: background builds pollute CPU cache, invalidating benchmark data | `just test-bench` or `pwsh tools/bque-runner.ps1 -Bench -Cmd "..."` (auto-freezes background builds for 0% CPU disturbance) |
-| ❌ `ctest ...` / `<TestBinary>.exe` | Unthrottled multi-threaded test runner saturates CPU | `just test` or `pwsh tools/run-tests.ps1` or `pwsh tools/bque-runner.ps1 -Cmd "ctest ..."` |
-| ❌ `pnpm build` / `tsc` (in large frontend workspaces) | V8 engine multi-thread memory and CPU spikes | `just build` or `pwsh tools/bque-runner.ps1 -Cmd "pnpm build"` |
+| ❌ `ninja -C <dir> <target>` / `ninja ...` | Consumes 100% CPU cores, freezes the system, causes worktree conflicts | `just test-build <target>` or `bque run -- ninja -C <dir> <target>` |
+| ❌ `cmake --build <dir> ...` | Causes target lock collisions, starves foreground responsiveness | `just build` or `bque run -- cmake --build <dir> ...` |
+| ❌ `cargo build` / `cargo test` / `cargo clippy` | Cargo target directory lock collisions, heavy CPU contention | `just build` / `just test` / `just check` or `bque run -- cargo ...` |
+| ❌ Raw Benchmark invocation (e.g. `ninja -C target/debug DuntingThumbnailPipelineBenchmark` or `./bench.exe`) | **Fatal Benchmark Corruption**: background builds pollute CPU cache, invalidating benchmark data | `just test-bench` or `bque bench -- <cmd>` (auto-freezes background builds for 0% CPU disturbance) |
+| ❌ `ctest ...` / `<TestBinary>.exe` | Unthrottled multi-threaded test runner saturates CPU | `just test` or `bque run -- ctest ...` |
+| ❌ `pnpm build` / `tsc` (in large frontend workspaces) | V8 engine multi-thread memory and CPU spikes | `just build` or `bque run -- pnpm build` |
 
 ---
 
 ## 🚀 3. Three Execution Tiers (Priority Order)
 
 ### Tier 1: Unified `just` Entry (Recommended)
-Always check the repository's `justfile` first. Standard targets automatically invoke the bque runner:
+Always check the repository's `justfile` first. Standard targets automatically invoke bque:
 ```powershell
 just build           # Compile under bque queue & Idle priority
 just check           # Check code under bque supervision
@@ -59,25 +59,26 @@ just queue-status    # Inspect current lock holder and waiters
 just queue-clean     # Clean abnormal or abandoned locks
 ```
 
-### Tier 2: Universal Runner Delegation (When no matching just recipe exists)
-If the project has `tools/bque-runner.ps1` and you need a custom build command:
+### Tier 2: Direct Native `bque` CLI (Custom / Ad-hoc Commands)
+When no matching `just` recipe exists, directly invoke `bque`:
 ```powershell
-# Standard queue execution (-Cmd preserves complex flags and switches)
-pwsh tools/bque-runner.ps1 -Desc "Custom Build" -Cmd "cargo build --release"
+# Standard queue execution (defaults to Idle priority, native reentrancy bypass)
+bque run -- cargo build --release
 
-# Clean-room benchmark execution
-pwsh tools/bque-runner.ps1 -Bench -Desc "Custom Benchmark" -Cmd "pnpm bench"
-```
+# Clean-room benchmark execution (High priority, auto-freezes background builds)
+bque bench -- pnpm bench
 
-### Tier 3: Direct Native CLI (When outside repository)
-When executing ad-hoc commands outside any repository that contains `tools/bque-runner.ps1`:
-```powershell
-bque run -d "Heavy Task" -p idle -- cargo build --workspace
-bque bench -d "Performance Probe" -- cargo bench
+# Introspection and queue cleanup
 bque status
 bque clean
 ```
-Inside projects, ALWAYS invoke through `just` or `tools/bque-runner.ps1` for automatic PATH/binary detection, recursion guard, and priority management.
+
+### Tier 3: Universal Runner Shim (Backward Compatibility)
+For legacy scripts or backwards compatibility:
+```powershell
+pwsh tools/bque-runner.ps1 -Desc "Custom Build" -Cmd "cargo build --release"
+pwsh tools/bque-runner.ps1 -Bench -Cmd "pnpm bench"
+```
 
 ---
 

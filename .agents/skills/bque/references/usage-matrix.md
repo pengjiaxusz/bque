@@ -7,12 +7,12 @@
 | :--- | :--- | :--- | :--- |
 | `cargo build` | `just build` | `bque run` | `Idle` (Inherited by compiler tree) |
 | `cargo check --workspace` | `just check` | `bque run` | `Idle` |
-| `cargo clippy -- -D warnings` | `just clippy` (or `bque-runner.ps1 -Cmd "..."`) | `bque run` | `Idle` |
+| `cargo clippy -- -D warnings` | `just clippy` (or `bque run -- cargo clippy ...`) | `bque run` | `Idle` |
 | `cargo test --workspace` | `just test` | `bque run` | `Idle` |
-| `pnpm build` | `just build` (or `bque-runner.ps1 -Cmd "pnpm build"`) | `bque run` | `Idle` |
+| `pnpm build` | `just build` (or `bque run -- pnpm build`) | `bque run` | `Idle` |
 | `cmake --build target/debug` | `just build` | `bque run` | `Idle` |
-| `ninja -C target/debug <target>` | `just test-build <target>` (or `bque-runner.ps1 -Cmd "ninja ..."`) | `bque run` | `Idle` |
-| `ctest --output-on-failure` | `just test` (or `run-tests.ps1`) | `bque run` | `Idle` |
+| `ninja -C target/debug <target>` | `just test-build <target>` (or `bque run -- ninja ...`) | `bque run` | `Idle` |
+| `ctest --output-on-failure` | `just test` (or `bque run -- ctest ...`) | `bque run` | `Idle` |
 | `cargo bench` | `just bench` | `bque bench` | `High` (Freezes background builds) |
 | `pnpm bench` | `just bench` | `bque bench` | `High` (Freezes background builds) |
 | `cargo fmt` | `cargo fmt` (Direct) | **Bypass** | Foreground |
@@ -48,13 +48,13 @@ Remove-Item test_out.log -ErrorAction SilentlyContinue
 If a process crashed abruptly or a build lock was left behind:
 ```powershell
 # 1. Inspect lock status
-just queue-status   # or: pwsh tools/bque-runner.ps1 -Status
+just queue-status   # or: bque status
 
 # 2. Force clean orphaned state files
-just queue-clean    # or: pwsh tools/bque-runner.ps1 -Clean
+just queue-clean    # or: bque clean
 
 # 3. Manually pause/resume builds when gaming or running profiling
-just queue-pause    # or: pwsh tools/bque-runner.ps1 -Pause
-just queue-resume   # or: pwsh tools/bque-runner.ps1 -Resume
+just queue-pause    # or: bque pause
+just queue-resume   # or: bque resume
 ```
 

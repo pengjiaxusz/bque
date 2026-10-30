@@ -10,24 +10,24 @@ default:
 
 # 全局跨工作树编译排队状态
 queue-status:
-    @pwsh -NoProfile -File tools/bque-runner.ps1 -Status
+    @bque status
 
 # 应急清理全局编译锁状态
 queue-clean:
-    @pwsh -NoProfile -File tools/bque-runner.ps1 -Clean
+    @bque clean
 
 # 手动暂停后台编译（让路游戏或交互压测）
 queue-pause:
-    @pwsh -NoProfile -File tools/bque-runner.ps1 -Pause
+    @bque pause
 
 # 手动恢复后台编译
 queue-resume:
-    @pwsh -NoProfile -File tools/bque-runner.ps1 -Resume
+    @bque resume
 
 # 构建
 [windows]
 build *ARGS:
-    @pwsh -NoProfile -File tools/bque-runner.ps1 -Desc "Cargo Build" -Cmd "cargo build {{ ARGS }}"
+    @bque run -- cargo build {{ ARGS }}
 
 [unix]
 build *ARGS:
@@ -36,7 +36,7 @@ build *ARGS:
 # 检查（clippy 全开）
 [windows]
 check *ARGS:
-    @pwsh -NoProfile -File tools/bque-runner.ps1 -Desc "Cargo Clippy" -Cmd "cargo clippy --all-targets --all-features -- -D warnings {{ ARGS }}"
+    @bque run -- cargo clippy --all-targets --all-features -- -D warnings {{ ARGS }}
 
 [unix]
 check *ARGS:
@@ -45,7 +45,7 @@ check *ARGS:
 # 测试
 [windows]
 test *ARGS:
-    @pwsh -NoProfile -File tools/bque-runner.ps1 -Desc "Cargo Test" -Cmd "cargo test --all-features {{ ARGS }}"
+    @bque run -- cargo test --all-features {{ ARGS }}
 
 [unix]
 test *ARGS:
@@ -54,7 +54,7 @@ test *ARGS:
 # 专项基准测试（bque bench 自动挂起后台编译以提供纯净 CPU 环境）
 [windows]
 bench *ARGS:
-    @pwsh -NoProfile -File tools/bque-runner.ps1 -Bench -Desc "Cargo Bench" -Cmd "cargo bench {{ ARGS }}"
+    @bque bench -- cargo bench {{ ARGS }}
 
 [unix]
 bench *ARGS:
