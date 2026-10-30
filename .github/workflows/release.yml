@@ -45,8 +45,11 @@ jobs:
         run: |
           $tag = "${{ steps.vars.outputs.tag }}"
           $zipName = "bque-$tag-windows-x86_64.zip"
+          $unversionedZip = "bque-windows-x86_64.zip"
           Compress-Archive -Path "target\release\bque.exe", "README.md", "README_zh.md" -DestinationPath $zipName
+          Copy-Item -Path $zipName -Destination $unversionedZip
           echo "zip_name=$zipName" >> $env:GITHUB_ENV
+          echo "unversioned_zip=$unversionedZip" >> $env:GITHUB_ENV
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -55,6 +58,8 @@ jobs:
           name: bque ${{ steps.vars.outputs.tag }}
           files: |
             ${{ env.zip_name }}
+            ${{ env.unversioned_zip }}
             target/release/bque.exe
+            tools/install.ps1
           generate_release_notes: true
           make_latest: true
