@@ -116,3 +116,29 @@ fn test_reentrancy_bypass() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("REENTRANT_BYPASS_OK"));
 }
+
+#[test]
+#[cfg(windows)]
+fn test_pathext_cmd_resolution() {
+    let exe = env!("CARGO_BIN_EXE_bque");
+    let temp_dir = std::env::temp_dir().join(format!("bque_test_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let cmd_file = temp_dir.join("bquetestcmd.cmd");
+    std::fs::write(&cmd_file, "@echo PATHEXT_RESOLUTION_OK\r\n").expect("write cmd file");
+
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{};{}", temp_dir.display(), current_path);
+
+    let output = Command::new(exe)
+        .env("PATH", new_path)
+        .args(["run", "--", "bquetestcmd"])
+        .output()
+        .expect("Failed to run bquetestcmd");
+
+    let _ = std::fs::remove_file(cmd_file);
+    let _ = std::fs::remove_dir(temp_dir);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("PATHEXT_RESOLUTION_OK"));
+}
