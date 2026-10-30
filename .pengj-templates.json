@@ -7,7 +7,8 @@
     "rust",
     "lefthook",
     "agent",
-    "vscode"
+    "vscode",
+    "bque"
   ],
   "options": {
     "channel": "stable",
@@ -56,11 +57,11 @@
     ".gitattributes": "269bd23209da05b77373f5f13adf48536b6ca8f5025570f1a2e5cce289a60b26",
     ".gitignore": "b6a40407ee143afed43a5af85afb1fecc1933450c48f532dc9661a394bf34eb1",
     ".vscode\\settings.json": "77385e2d97940ac44b45499b21d7694713a232b424e675f38be66217e63366a5",
-    "AGENTS.md": "fd6d5b54216b14893a03a887bfc728b93db6c27f86e2270ab4d785d7331e3976",
-    "Cargo.toml": "a734a9d77a44b4052e7ed37822b81be7acf06fd75809c53035492e1a4ba7e422",
+    "AGENTS.md": "54f64d4834bc30876e2954c40a1937dd973f9831a70715e77f4db4e8e751fd72",
     "commitlint.base.js": "7a6e2a5ae12b31ee0da5104b3d3ef321ea55aa07c8fa630e0aa11e7e3195a4f2",
-    "justfile": "e5ee882b9d468b71539f8e61bc4dfcc055b9176408bafaba8530d1b79d80b116",
+    "justfile": "b52bc6987c2bfe3ccb1ddf9b9da5e8d6c0e42ecfae0aa92ff84821bbf2341946",
     "package.json": "ca736e5e779ed6919c2155077a0fe57c34a0d9edde2390283823fb731c4c4d86",
-    "rust-toolchain.toml": "550d7a5d727260f3c5aa9cfa5b42fc6d7265c67bbfced6c5ca8db2ab0e9e5037"
+    "rust-toolchain.toml": "550d7a5d727260f3c5aa9cfa5b42fc6d7265c67bbfced6c5ca8db2ab0e9e5037",
+    "tools\\bque-runner.ps1": "14cb64c8f18963df6b44bfc398be3ec7f5835e7c813e71e6cd6a03b05c17b965"
   }
 }
