@@ -68,7 +68,7 @@ bque clean
 ## 🛡️ 3. Two Hard Ironclad Rules
 
 1. **Pipeline Hygiene (Strictly Forbidden)**:
-   - **FORBIDDEN**: Never pipe native console build commands into PowerShell truncation filters (e.g., `cargo test 2>&1 | Select-Object -First 100`).
+   - **FORBIDDEN**: Never pipe native console build commands into PowerShell truncation filters (e.g., `cargo test 2>&1 | Select-Object -First 100` # pipeline-hygiene: ok anti-pattern doc).
    - **Root Cause**: Windows native processes do not handle PowerShell cooperative breaks; when the 4KB anonymous pipe buffer fills up, the process blocks on write, resulting in a permanent 120s deadlock.
    - **Solution**: Always redirect to disk first, then inspect: `cargo test *> out.log; Get-Content out.log -TotalCount 100`.
 2. **Process Termination Hygiene**:

@@ -24,7 +24,7 @@
 When running native console processes (e.g. `cmake`, `cargo`, `ninja`, `ctest`) in PowerShell:
 ```powershell
 # DANGEROUS ANTI-PATTERN: DO NOT RUN THIS!
-cargo test 2>&1 | Select-Object -First 100
+cargo test 2>&1 | Select-Object -First 100  # pipeline-hygiene: ok anti-pattern doc
 ```
 - PowerShell creates an anonymous pipe with a fixed 4KB buffer.
 - `Select-Object -First 100` stops reading once it has collected 100 objects and closes its end of the pipeline.
