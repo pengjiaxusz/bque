@@ -37,10 +37,10 @@ AI assistants are **STRICTLY PROHIBITED** from executing raw build or compiler c
 
 | Prohibited Raw Command (FORBIDDEN) | Hazards & Failure Modes | Mandatory Wrapped Alternative |
 | :--- | :--- | :--- |
-| ❌ `ninja -C <dir> <target>` / `ninja ...` | Consumes 100% CPU cores, freezes the system, causes worktree conflicts | `just test-build <target>` or `pwsh tools/bque-runner.ps1 -Cmd "ninja -C <dir> <target>"` or `bque run -- ninja -C <dir> <target>` |
+| ❌ `ninja -C <dir> <target>` / `ninja ...` | Consumes 100% CPU cores, freezes the system, causes worktree conflicts | `just test-build <target>` or `pwsh tools/bque-runner.ps1 -Cmd "ninja -C <dir> <target>"` |
 | ❌ `cmake --build <dir> ...` | Causes target lock collisions, starves foreground responsiveness | `pwsh tools/locked-cmake-build.ps1 ...` or `just build` or `pwsh tools/bque-runner.ps1 -Cmd "cmake --build ..."` |
 | ❌ `cargo build` / `cargo test` / `cargo clippy` | Cargo target directory lock collisions, heavy CPU contention | `just build` / `just test` / `just check` or `pwsh tools/bque-runner.ps1 -Cmd "cargo ..."` |
-| ❌ Raw Benchmark invocation (e.g. `ninja -C target/debug DuntingThumbnailPipelineBenchmark` or `./bench.exe`) | **Fatal Benchmark Corruption**: background builds pollute CPU cache, invalidating benchmark data | `just test-bench` or `pwsh tools/bque-runner.ps1 -Bench -Cmd "..."` or `bque bench -- ...` (auto-freezes background builds for 0% CPU disturbance) |
+| ❌ Raw Benchmark invocation (e.g. `ninja -C target/debug DuntingThumbnailPipelineBenchmark` or `./bench.exe`) | **Fatal Benchmark Corruption**: background builds pollute CPU cache, invalidating benchmark data | `just test-bench` or `pwsh tools/bque-runner.ps1 -Bench -Cmd "..."` (auto-freezes background builds for 0% CPU disturbance) |
 | ❌ `ctest ...` / `<TestBinary>.exe` | Unthrottled multi-threaded test runner saturates CPU | `just test` or `pwsh tools/run-tests.ps1` or `pwsh tools/bque-runner.ps1 -Cmd "ctest ..."` |
 | ❌ `pnpm build` / `tsc` (in large frontend workspaces) | V8 engine multi-thread memory and CPU spikes | `just build` or `pwsh tools/bque-runner.ps1 -Cmd "pnpm build"` |
 
@@ -69,14 +69,15 @@ pwsh tools/bque-runner.ps1 -Desc "Custom Build" -Cmd "cargo build --release"
 pwsh tools/bque-runner.ps1 -Bench -Desc "Custom Benchmark" -Cmd "pnpm bench"
 ```
 
-### Tier 3: Direct Native CLI (Raw bque commands)
-If running outside a repository or calling bque directly:
+### Tier 3: Direct Native CLI (When outside repository)
+When executing ad-hoc commands outside any repository that contains `tools/bque-runner.ps1`:
 ```powershell
 bque run -d "Heavy Task" -p idle -- cargo build --workspace
 bque bench -d "Performance Probe" -- cargo bench
 bque status
 bque clean
 ```
+Inside projects, ALWAYS invoke through `just` or `tools/bque-runner.ps1` for automatic PATH/binary detection, recursion guard, and priority management.
 
 ---
 

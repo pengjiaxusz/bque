@@ -48,13 +48,13 @@ Remove-Item test_out.log -ErrorAction SilentlyContinue
 If a process crashed abruptly or a build lock was left behind:
 ```powershell
 # 1. Inspect lock status
-just queue-status   # or: bque status
+just queue-status   # or: pwsh tools/bque-runner.ps1 -Status
 
 # 2. Force clean orphaned state files
-just queue-clean    # or: bque clean
+just queue-clean    # or: pwsh tools/bque-runner.ps1 -Clean
 
 # 3. Manually pause/resume builds when gaming or running profiling
-bque pause
-bque resume
+just queue-pause    # or: pwsh tools/bque-runner.ps1 -Pause
+just queue-resume   # or: pwsh tools/bque-runner.ps1 -Resume
 ```
 
