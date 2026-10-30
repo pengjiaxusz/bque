@@ -35,7 +35,7 @@
     ".agents\\skills\\arch-align\\SKILL.md": "05a7b27400a21dc0be0ed0c065211bb43a85ef2f436d09246550af98a7092622",
     ".agents\\skills\\arch-align\\references\\GENERATE-DOC.md": "22e2dc3856f70700aa6b2e6308e1917f7d760dd81e8f4b867328302876525597",
     ".agents\\skills\\arch-align\\references\\GENERATE-INDEX.md": "42cbf1e09650fb29a681d7f653685a83055882ea78240e8ad2e07e2e4996975f",
-    ".agents\\skills\\bque\\SKILL.md": "6d5e248eeda81edbf01b15783f571fb4c481f5639135100f7d60ea109d9da183",
+    ".agents\\skills\\bque\\SKILL.md": "13791f1967c22ad5c3c1d32a4ed7d7c5c1c323aa2fb53915b19648e7ee43347d",
     ".agents\\skills\\bque\\references\\install.md": "0f6982e37cc4938fc92086df3ad41f0df6e5f369bdd4a97c73b84d210e40ca55",
     ".agents\\skills\\bque\\references\\usage-matrix.md": "d5c3b33fe787015ced22a513c3a3e17d3af46a307b9a05db562cc233372080b9",
     ".agents\\skills\\caveman\\SKILL.md": "ad046cafde3ee094136ce091b7dfde5c09bcf25914734c249f9c54e17b4bdf4b",
@@ -61,11 +61,10 @@
     ".gitattributes": "269bd23209da05b77373f5f13adf48536b6ca8f5025570f1a2e5cce289a60b26",
     ".gitignore": "1c7bcaf26d932af33205131256d9ae49437fbc58c9280a827926a7e905839924",
     ".vscode\\settings.json": "77385e2d97940ac44b45499b21d7694713a232b424e675f38be66217e63366a5",
-    "AGENTS.md": "958dcb529a044b52d15ccabcb5dfca24373dd30690efe588bfe54a8c68a0f53d",
+    "AGENTS.md": "7eca7fa201e963b4b73c9dddf76f275187271b861793c55069420d60c033d146",
     "commitlint.base.js": "7a6e2a5ae12b31ee0da5104b3d3ef321ea55aa07c8fa630e0aa11e7e3195a4f2",
     "justfile": "86400f8de4e1fe79e18065d4bbfdb9804c0fefa9f8e27ed807c662e7268484c3",
     "package.json": "ca736e5e779ed6919c2155077a0fe57c34a0d9edde2390283823fb731c4c4d86",
-    "rust-toolchain.toml": "550d7a5d727260f3c5aa9cfa5b42fc6d7265c67bbfced6c5ca8db2ab0e9e5037",
-    "tools\\bque-runner.ps1": "4355a1609758f6e5d1720f9f6d29e3b1b98ab96d9cfeaa9ef9fad1b3ff13aa1e"
+    "rust-toolchain.toml": "550d7a5d727260f3c5aa9cfa5b42fc6d7265c67bbfced6c5ca8db2ab0e9e5037"
   }
 }

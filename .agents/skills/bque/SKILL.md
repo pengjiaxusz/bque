@@ -46,7 +46,7 @@ AI assistants are **STRICTLY PROHIBITED** from executing raw build or compiler c
 
 ---
 
-## 🚀 3. Three Execution Tiers (Priority Order)
+## 🚀 3. Two Execution Tiers (Priority Order)
 
 ### Tier 1: Unified `just` Entry (Recommended)
 Always check the repository's `justfile` first. Standard targets automatically invoke bque:
@@ -71,13 +71,6 @@ bque bench -- pnpm bench
 # Introspection and queue cleanup
 bque status
 bque clean
-```
-
-### Tier 3: Universal Runner Shim (Backward Compatibility)
-For legacy scripts or backwards compatibility:
-```powershell
-pwsh tools/bque-runner.ps1 -Desc "Custom Build" -Cmd "cargo build --release"
-pwsh tools/bque-runner.ps1 -Bench -Cmd "pnpm bench"
 ```
 
 ---

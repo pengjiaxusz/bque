@@ -84,6 +84,7 @@ fn test_pause_and_resume_cycle() {
 fn test_benchmark_clean_execution() {
     let exe = env!("CARGO_BIN_EXE_bque");
     let output = Command::new(exe)
+        .env_remove("BQUE_ACTIVE_PID")
         .args([
             "bench",
             "--desc",
