@@ -46,8 +46,14 @@ Benchmarking and profiling require a **completely clean CPU environment**:
 
 ## Installation
 
+### One-Liner Quick Install (Recommended)
+Run the following command in PowerShell. It requires **no administrator privileges**, automatically downloads the latest release, installs it to `$env:LOCALAPPDATA\bque\bin`, updates your `PATH`, and takes effect immediately in the current session:
+```powershell
+irm https://github.com/pengjiaxusz/bque/releases/latest/download/install.ps1 | iex
+```
+
 ### Pre-built Binaries
-Download the latest `bque.exe` or release archive from [GitHub Releases](https://github.com/pengjiaxusz/bque/releases/latest) and add it to your system `PATH`.
+Download the latest `bque-windows-x86_64.zip` or `bque.exe` from [GitHub Releases](https://github.com/pengjiaxusz/bque/releases/latest) and place it in your tools directory (recommended: `$env:LOCALAPPDATA\bque\bin`), then add it to your system `PATH`.
 
 ### From Source
 ```bash

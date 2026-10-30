@@ -49,8 +49,14 @@
 
 ## 安装方式
 
+### 一键快速安装（推荐）
+在 PowerShell 中运行以下命令。**无需管理员权限**，自动下载最新发布版本、安装至 `$env:LOCALAPPDATA\bque\bin` 并自动配置 PATH，当前终端即刻生效：
+```powershell
+irm https://github.com/pengjiaxusz/bque/releases/latest/download/install.ps1 | iex
+```
+
 ### 预编译二进制下载
-直接前往 [GitHub Releases](https://github.com/pengjiaxusz/bque/releases/latest) 下载最新的 `bque.exe`，并将其所在目录加入系统环境变量 `PATH` 即可。
+直接前往 [GitHub Releases](https://github.com/pengjiaxusz/bque/releases/latest) 下载最新的 `bque-windows-x86_64.zip` 或 `bque.exe`，并将其所在目录（推荐 `$env:LOCALAPPDATA\bque\bin`）加入系统环境变量 `PATH` 即可。
 
 ### 源码编译安装
 ```bash
