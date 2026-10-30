@@ -15,12 +15,11 @@
   1. Always declare configuration in the project-specific area outside the managed block in `SKILL.md` (e.g. integration branch declaration, untracked path ignore regex, or verification gates);
   2. If the template lacks necessary capabilities, propose generic features to upstream `pengj-templates` instead of keeping local hacks in downstream;
   3. Run `cargo run -p pengj-templates-cli -- audit --dir . --diff` anytime to inspect alignment and keep drift violations at zero.
-- **Global Cross-Worktree Build Queue & Priority Lowering**: All heavy build, check, and test tasks are unified under the bque global scheduler (`Local\Bque_Global_Build_Lock` mutex lock), running with `Idle` priority by default to guarantee silky-smooth foreground responsiveness; benchmarks and performance probes use `bque bench` (or `just bench`) to automatically freeze background builds and provide clean CPU conditions. Inspect queue status with `just queue-status`, and recover abnormal lock states with `just queue-clean`.
-- **Pipeline Hygiene**: Never use PowerShell pipeline truncations (e.g. `| Select-Object -First 100`) after native build/test commands; native console processes do not handle cooperative breaks, causing 4KB anonymous pipe deadlocks on Windows.
 
 ### Enabled skills
 
 - `arch-align` — see `.agents/skills/arch-align/SKILL.md`
+- `bque` — see `.agents/skills/bque/SKILL.md`
 - `caveman` — see `.agents/skills/caveman/SKILL.md`
 - `git-workflow` — see `.agents/skills/git-workflow/SKILL.md`
 - `grill-me` — see `.agents/skills/grill-me/SKILL.md`
