@@ -11,14 +11,14 @@ fn resolve_program(program: &str) -> std::path::PathBuf {
         if path.is_file() {
             return path.to_path_buf();
         }
-        if path.extension().is_none() {
-            if let Ok(pathext) = std::env::var("PATHEXT") {
-                for ext in pathext.split(';').filter(|s| !s.is_empty()) {
-                    let ext_clean = ext.trim_start_matches('.');
-                    let candidate = path.with_extension(ext_clean);
-                    if candidate.is_file() {
-                        return candidate;
-                    }
+        if path.extension().is_none()
+            && let Ok(pathext) = std::env::var("PATHEXT")
+        {
+            for ext in pathext.split(';').filter(|s| !s.is_empty()) {
+                let ext_clean = ext.trim_start_matches('.');
+                let candidate = path.with_extension(ext_clean);
+                if candidate.is_file() {
+                    return candidate;
                 }
             }
         }
@@ -38,10 +38,6 @@ fn resolve_program(program: &str) -> std::path::PathBuf {
 
     if let Ok(paths) = std::env::var("PATH") {
         for dir in std::env::split_paths(&paths) {
-            let candidate = dir.join(program);
-            if candidate.is_file() {
-                return candidate;
-            }
             if path.extension().is_none() {
                 for ext in &exts {
                     let ext_clean = ext.trim_start_matches('.');
@@ -50,6 +46,10 @@ fn resolve_program(program: &str) -> std::path::PathBuf {
                         return candidate;
                     }
                 }
+            }
+            let direct = dir.join(program);
+            if direct.is_file() {
+                return direct;
             }
         }
     }
