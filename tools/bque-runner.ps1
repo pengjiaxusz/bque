@@ -53,17 +53,31 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# 1. 检查 bque 是否存在于系统 PATH
+# 1. 检查 bque 是否存在于系统 PATH 或标准安装路径
 $bqueCmd = Get-Command "bque" -ErrorAction SilentlyContinue
+$defaultBqueDir = "$env:LOCALAPPDATA\bque\bin"
+$defaultBqueExe = "$defaultBqueDir\bque.exe"
+
+if (-not $bqueCmd -and (Test-Path $defaultBqueExe)) {
+    # 已安装但当前会话尚未加载 PATH，自动将默认目录注入当前进程
+    $env:Path = "$defaultBqueDir;$env:Path"
+    $bqueCmd = Get-Command "bque" -ErrorAction SilentlyContinue
+}
+
 if (-not $bqueCmd) {
     Write-Host ""
     Write-Host "================================================================" -ForegroundColor Red
-    Write-Host "   ❌ [致命缺失] 未在系统 PATH 中找到 bque 全局编译调度器！      " -ForegroundColor Red
+    Write-Host "   ❌ [未检测到 bque] 未在系统环境中找到 bque 编译调度器！      " -ForegroundColor Red
     Write-Host "================================================================" -ForegroundColor Red
     Write-Host ""
-    Write-Host "本项目已接入 bque 调度引擎进行全局多工作树编译排队、CPU 动态限流与跑分保护。" -ForegroundColor Yellow
-    Write-Host "请前往最新 Release 下载 bque.exe 并将其所在目录添加到系统环境变量 PATH：" -ForegroundColor Cyan
-    Write-Host "👉 https://github.com/pengjiaxusz/bque/releases/latest" -ForegroundColor Green
+    Write-Host "本项目已接入 bque 调度引擎进行全局多工作树编译排队、CPU 降级与跑分保护。" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "👉 请在 PowerShell 中运行以下一键命令自动安装（免管理员权限、自动配置 PATH）：" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host '   irm https://github.com/pengjiaxusz/bque/releases/latest/download/install.ps1 | iex' -ForegroundColor Green
+    Write-Host ""
+    Write-Host "默认安装位置: $defaultBqueDir" -ForegroundColor DarkGray
+    Write-Host "手动下载与文档: https://github.com/pengjiaxusz/bque/releases/latest" -ForegroundColor DarkGray
     Write-Host ""
     exit 1
 }
