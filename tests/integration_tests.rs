@@ -101,3 +101,18 @@ fn test_benchmark_clean_execution() {
     assert!(stdout.contains("BENCH_OK"));
     assert!(stdout.contains("Benchmark finished with exit code 0"));
 }
+
+#[test]
+fn test_reentrancy_bypass() {
+    let exe = env!("CARGO_BIN_EXE_bque");
+    let current_pid = std::process::id().to_string();
+
+    let output = Command::new(exe)
+        .env("BQUE_ACTIVE_PID", current_pid)
+        .args(["run", "--", "cmd.exe", "/c", "echo REENTRANT_BYPASS_OK"])
+        .output()
+        .expect("Failed to run reentrant bque");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("REENTRANT_BYPASS_OK"));
+}

@@ -37,7 +37,7 @@ pub enum Commands {
 #[derive(Args, Debug)]
 pub struct RunArgs {
     /// The command and arguments to execute
-    #[arg(required = true, last = true)]
+    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
 
     /// Human-readable task description (inferred from command if omitted)
@@ -80,7 +80,7 @@ pub struct RunArgs {
 #[derive(Args, Debug)]
 pub struct BenchArgs {
     /// The benchmark command and arguments to execute
-    #[arg(required = true, last = true)]
+    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
 
     /// Description of the benchmark run

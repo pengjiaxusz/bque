@@ -28,18 +28,18 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
                 .unwrap_or_default()
         });
 
-    // Check reentrancy
-    let is_reentrant = if let Ok(active_pid_str) = std::env::var("BQUE_ACTIVE_PID") {
-        if let Ok(active_pid) = active_pid_str.parse::<u32>() {
-            active_pid == my_pid || is_pid_alive(active_pid)
-        } else {
-            false
-        }
-    } else {
-        false
-    };
+    // Check reentrancy: if already running inside an active bque session, pass through directly
+    let is_reentrant = std::env::var("BQUE_ACTIVE_PID")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .map(|pid| pid == my_pid || is_pid_alive(pid))
+        .unwrap_or(false);
 
-    let _lock_guard = if !args.observer && !is_reentrant {
+    if is_reentrant {
+        return execute_child_command(&args.command, args.cwd.as_deref(), None);
+    }
+
+    let _lock_guard = if !args.observer {
         // Register as waiter
         let waiter = WaiterState {
             pid: my_pid,

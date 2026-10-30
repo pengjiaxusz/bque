@@ -12,6 +12,19 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
         return Err(anyhow!("No benchmark command specified"));
     }
 
+    let my_pid = std::process::id();
+
+    // Check reentrancy: if already running inside an active bque session, pass through directly
+    let is_reentrant = std::env::var("BQUE_ACTIVE_PID")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .map(|pid| pid == my_pid || crate::state::is_pid_alive(pid))
+        .unwrap_or(false);
+
+    if is_reentrant {
+        return execute_child_command(&args.command, args.cwd.as_deref(), None);
+    }
+
     let storage = StateStorage::new()?;
     let freezer = ProcessFreezer::new();
 
@@ -104,6 +117,10 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
     }
 
     println!("[bque bench] Running benchmark with clean CPU: {}", desc);
+    // Pass environment variable for reentrant calls in benchmark
+    unsafe {
+        std::env::set_var("BQUE_ACTIVE_PID", my_pid.to_string());
+    }
     let exit_code = execute_child_command(&args.command, args.cwd.as_deref(), None)?;
 
     // Clean up: resume frozen background builds
