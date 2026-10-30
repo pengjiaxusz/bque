@@ -36,7 +36,7 @@
     ".agents\\skills\\arch-align\\references\\GENERATE-DOC.md": "22e2dc3856f70700aa6b2e6308e1917f7d760dd81e8f4b867328302876525597",
     ".agents\\skills\\arch-align\\references\\GENERATE-INDEX.md": "42cbf1e09650fb29a681d7f653685a83055882ea78240e8ad2e07e2e4996975f",
     ".agents\\skills\\bque\\SKILL.md": "4d2402ed93c3d55701a68cca1700c3704ae25dc8c7c9ca332a21932da5d10d89",
-    ".agents\\skills\\bque\\references\\install.md": "2602479d02ba5a6af362cdba153a0d719b9bc3956f44c51e6c6d23d3c7067638",
+    ".agents\\skills\\bque\\references\\install.md": "0f6982e37cc4938fc92086df3ad41f0df6e5f369bdd4a97c73b84d210e40ca55",
     ".agents\\skills\\bque\\references\\usage-matrix.md": "e2138ec30b1c27b4f1c4d13fdcf14654d0271d0a907aaaeaabcd679f5ea54103",
     ".agents\\skills\\caveman\\SKILL.md": "ad046cafde3ee094136ce091b7dfde5c09bcf25914734c249f9c54e17b4bdf4b",
     ".agents\\skills\\git-workflow\\SKILL.md": "925041656bbd70b776d1f607761da3a83b5485d42f642577a03e35e6fd55c5a6",
@@ -66,6 +66,6 @@
     "justfile": "b52bc6987c2bfe3ccb1ddf9b9da5e8d6c0e42ecfae0aa92ff84821bbf2341946",
     "package.json": "ca736e5e779ed6919c2155077a0fe57c34a0d9edde2390283823fb731c4c4d86",
     "rust-toolchain.toml": "550d7a5d727260f3c5aa9cfa5b42fc6d7265c67bbfced6c5ca8db2ab0e9e5037",
-    "tools\\bque-runner.ps1": "14cb64c8f18963df6b44bfc398be3ec7f5835e7c813e71e6cd6a03b05c17b965"
+    "tools\\bque-runner.ps1": "f4b9c5f42d4ea753aaf2a91539a77995a342e8dc2cc6f400a9e24790979b8591"
   }
 }
