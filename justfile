@@ -66,3 +66,7 @@ fmt:
 
 # 一键全检查（CI 用）
 ci: fmt check test
+
+# 一键门禁
+gate: ci
+alias check-gate := gate
