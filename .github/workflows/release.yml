@@ -2,10 +2,9 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
+  workflow_dispatch:
 
 jobs:
   build-and-release:
@@ -15,6 +14,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -26,13 +27,18 @@ jobs:
         id: vars
         shell: pwsh
         run: |
-          $content = Get-Content Cargo.toml -Raw
-          if ($content -match 'version\s*=\s*"([^"]+)"') {
-              $ver = $matches[1]
+          if ('${{ github.ref_type }}' -eq 'tag') {
+              $tag = '${{ github.ref_name }}'
+              $ver = $tag.TrimStart('v')
           } else {
-              $ver = "0.1.0"
+              $content = Get-Content Cargo.toml -Raw
+              if ($content -match 'version\s*=\s*"([^"]+)"') {
+                  $ver = $matches[1]
+              } else {
+                  $ver = "0.1.0"
+              }
+              $tag = "v$ver"
           }
-          $tag = "v$ver"
           Write-Host "Releasing version: $ver with tag: $tag"
           echo "version=$ver" >> $env:GITHUB_OUTPUT
           echo "tag=$tag" >> $env:GITHUB_OUTPUT
@@ -40,14 +46,28 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Package artifacts
+      - name: Package artifacts & Generate Release Notes
         shell: pwsh
         run: |
           $tag = "${{ steps.vars.outputs.tag }}"
           $zipName = "bque-$tag-windows-x86_64.zip"
           $unversionedZip = "bque-windows-x86_64.zip"
-          Compress-Archive -Path "target\release\bque.exe", "README.md", "README_zh.md" -DestinationPath $zipName
-          Copy-Item -Path $zipName -Destination $unversionedZip
+          Compress-Archive -Path "target\release\bque.exe", "README.md", "README_zh.md" -DestinationPath $zipName -Force
+          Copy-Item -Path $zipName -Destination $unversionedZip -Force
+
+          $artifacts = @(
+              $zipName,
+              $unversionedZip,
+              "target\release\bque.exe",
+              "tools\install.ps1"
+          )
+
+          pwsh -NoProfile -File tools/generate-release-notes.ps1 `
+              -Tag $tag `
+              -OutputFile "release_notes.md" `
+              -ChecksumFile "checksums-sha256.txt" `
+              -Artifacts ($artifacts -join ',')
+
           echo "zip_name=$zipName" >> $env:GITHUB_ENV
           echo "unversioned_zip=$unversionedZip" >> $env:GITHUB_ENV
 
@@ -56,10 +76,11 @@ jobs:
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
           name: bque ${{ steps.vars.outputs.tag }}
+          body_path: release_notes.md
           files: |
             ${{ env.zip_name }}
             ${{ env.unversioned_zip }}
             target/release/bque.exe
             tools/install.ps1
-          generate_release_notes: true
+            checksums-sha256.txt
           make_latest: true

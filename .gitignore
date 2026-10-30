@@ -13,3 +13,8 @@
 
 /target
 # PENGJ_TEMPLATE_END
+
+# Release artifacts
+/release_notes.md
+/checksums-sha256.txt
+*.zip
