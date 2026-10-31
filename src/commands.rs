@@ -227,6 +227,8 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
         let _ = storage.clear_lock_state(Some(my_pid));
     }
 
+    crate::update::check_and_print_notice(&theme);
+
     Ok(exit_code)
 }
 
@@ -268,6 +270,7 @@ pub fn handle_status(args: StatusArgs) -> Result<()> {
         for line in lines {
             println!("{}", line);
         }
+        crate::update::check_and_print_notice(&theme);
         Ok(())
     }
 }

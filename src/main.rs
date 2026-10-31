@@ -7,12 +7,16 @@ mod lock;
 mod runner;
 mod state;
 pub mod ui;
+mod update;
 
 use clap::Parser;
 use cli::{Cli, Commands};
 
 fn main() -> anyhow::Result<()> {
     ui::enable_ansi_support();
+    update::clean_old_binaries();
+    update::maybe_spawn_background_check();
+
     let cli = Cli::parse();
 
     let exit_code = match cli.command {
@@ -32,6 +36,10 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Clean => {
             commands::handle_clean()?;
+            0
+        }
+        Commands::Update(args) => {
+            update::handle_update(args)?;
             0
         }
     };

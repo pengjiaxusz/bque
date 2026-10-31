@@ -32,6 +32,9 @@ pub enum Commands {
 
     /// Clean dead locks, orphaned waiter records, and zombie state files
     Clean,
+
+    /// Check for updates or upgrade bque to the latest version
+    Update(UpdateArgs),
 }
 
 #[derive(Args, Debug)]
@@ -124,6 +127,21 @@ pub struct PauseArgs {
     /// Optional reason for manual pause
     #[arg(short = 'r', long, default_value = "Manual user pause")]
     pub reason: String,
+}
+
+#[derive(Args, Debug)]
+pub struct UpdateArgs {
+    /// Only check if an update is available without performing the update
+    #[arg(long, default_value_t = false)]
+    pub check: bool,
+
+    /// Force update even if already on the latest version
+    #[arg(short = 'f', long, default_value_t = false)]
+    pub force: bool,
+
+    /// Specific version or tag to install (e.g. 'v0.1.1')
+    #[arg(long)]
+    pub tag: Option<String>,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

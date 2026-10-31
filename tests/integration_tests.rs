@@ -198,3 +198,21 @@ fn test_blocked_by_pause_notification() {
             || combined.contains("Timed out waiting")
     );
 }
+
+#[test]
+fn test_update_check_command() {
+    let exe = env!("CARGO_BIN_EXE_bque");
+    let output = Command::new(exe)
+        .args(["update", "--check"])
+        .output()
+        .expect("Failed to execute bque update --check");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        combined.contains("Checking for updates")
+            || combined.contains("up to date")
+            || combined.contains("version is available")
+            || combined.contains("Failed to check")
+    );
+}
