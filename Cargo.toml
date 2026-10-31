@@ -1,6 +1,6 @@
 [package]
 name = "bque"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Universal build queue, CPU governor, and clean-room benchmark protector for Windows"
 authors = ["pengjiaxusz"]
