@@ -143,3 +143,58 @@ fn test_pathext_cmd_resolution() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("PATHEXT_RESOLUTION_OK"));
 }
+
+#[test]
+fn test_status_dashboard_rendering() {
+    let exe = env!("CARGO_BIN_EXE_bque");
+    let output = Command::new(exe)
+        .arg("status")
+        .output()
+        .expect("Failed to execute bque status");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Global Build Queue & Governor"));
+    assert!(
+        stdout.contains("WAITERS")
+            || stdout.contains("BUILD QUEUE")
+            || stdout.contains("BUILDS MANUALLY PAUSED")
+    );
+}
+
+#[test]
+fn test_blocked_by_pause_notification() {
+    let exe = env!("CARGO_BIN_EXE_bque");
+    let p_out = Command::new(exe)
+        .args(["pause", "--reason", "Wait Notification Test"])
+        .output()
+        .expect("pause failed");
+    assert!(p_out.status.success());
+
+    let run_out = Command::new(exe)
+        .env_remove("BQUE_ACTIVE_PID")
+        .args([
+            "run",
+            "--timeout",
+            "1",
+            "--",
+            "cmd.exe",
+            "/c",
+            "echo should_not_run",
+        ])
+        .output()
+        .expect("run failed");
+
+    let r_out = Command::new(exe)
+        .arg("resume")
+        .output()
+        .expect("resume failed");
+    assert!(r_out.status.success());
+
+    let stdout = String::from_utf8_lossy(&run_out.stdout);
+    let stderr = String::from_utf8_lossy(&run_out.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        combined.contains("Blocked by Pause 'Wait Notification Test'")
+            || combined.contains("Timed out waiting")
+    );
+}

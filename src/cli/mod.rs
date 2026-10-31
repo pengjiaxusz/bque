@@ -113,6 +113,10 @@ pub struct StatusArgs {
     /// Output queue state as machine-readable JSON
     #[arg(long, default_value_t = false)]
     pub json: bool,
+
+    /// Continuously refresh and display queue status in real time
+    #[arg(short = 'w', long, default_value_t = false)]
+    pub watch: bool,
 }
 
 #[derive(Args, Debug)]

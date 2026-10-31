@@ -3,6 +3,7 @@ use crate::job::{CpuTopology, ProcessFreezer, apply_process_affinity, apply_proc
 use crate::lock::{BENCH_MUTEX_NAME, NamedMutex};
 use crate::runner::execute_child_command;
 use crate::state::{BenchState, StateStorage};
+use crate::ui::{ColorTheme, LiveProgressReporter};
 use anyhow::{Result, anyhow};
 use chrono::Utc;
 use std::time::Duration;
@@ -27,6 +28,8 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
 
     let storage = StateStorage::new()?;
     let freezer = ProcessFreezer::new();
+    let theme = ColorTheme::new();
+    let desc = args.desc.clone().unwrap_or_else(|| args.command.join(" "));
 
     let bench_mutex = NamedMutex::new(BENCH_MUTEX_NAME);
     let timeout = if args.timeout == 0 {
@@ -35,14 +38,18 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
         Duration::from_secs(args.timeout)
     };
 
-    println!("[bque bench] Requesting exclusive benchmark lock...");
+    let mut reporter = LiveProgressReporter::new(my_pid, desc.clone());
+    let start_wait = std::time::Instant::now();
+    let prev_bench = storage.load_bench_state().ok().flatten();
+
     let _guard = bench_mutex.acquire_with_progress(timeout, |elapsed| {
-        println!(
-            "[bque bench] Waiting for previous benchmark to complete [{:?}]...",
-            elapsed
-        );
+        let prev_info = prev_bench
+            .as_ref()
+            .map(|b| (&b.pid, b.description.as_str()));
+        reporter.tick_bench(prev_info, elapsed.as_secs());
         Ok(())
     })?;
+    reporter.finish_bench_acquired(start_wait.elapsed().as_secs());
 
     // Suspend background build if active and requested
     let mut frozen_pids = Vec::new();
@@ -54,27 +61,30 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
 
     if let Some(active) = active_build {
         println!(
-            "[bque bench] Freezing active background build PID {} ('{}')...",
-            active.pid, active.description
+            "{} ⏸️  Freezing active background build PID {} ('{}')...",
+            theme.badge_bench(),
+            theme.bold_cyan(&active.pid.to_string()),
+            theme.white(&active.description)
         );
         match freezer.suspend_process_tree(active.pid) {
             Ok(pids) => {
                 println!(
-                    "[bque bench] Successfully suspended {} processes in build tree.",
-                    pids.len()
+                    "{} Successfully suspended {} processes in build tree.",
+                    theme.badge_bench(),
+                    theme.bold_green(&pids.len().to_string())
                 );
                 frozen_pids = pids;
             }
             Err(e) => {
                 eprintln!(
-                    "[bque bench] Warning: Failed to suspend background build PID {}: {}",
-                    active.pid, e
+                    "{} Warning: Failed to suspend background build PID {}: {}",
+                    theme.badge_bench(),
+                    active.pid,
+                    e
                 );
             }
         }
     }
-
-    let desc = args.desc.clone().unwrap_or_else(|| args.command.join(" "));
 
     let state = BenchState {
         pid: std::process::id(),
@@ -88,13 +98,15 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
     // Apply benchmark priority (default: High)
     if let Err(e) = apply_process_priority(args.priority) {
         eprintln!(
-            "[bque bench] Warning: Failed to set benchmark priority: {}",
+            "{} Warning: Failed to set benchmark priority: {}",
+            theme.badge_bench(),
             e
         );
     } else {
         println!(
-            "[bque bench] Elevated process priority to {:?}",
-            args.priority
+            "{} Elevated process priority to {}",
+            theme.badge_bench(),
+            theme.bold_cyan(&format!("{:?}", args.priority))
         );
     }
 
@@ -104,19 +116,33 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
         match topo.parse_affinity_spec(spec) {
             Ok(mask) => {
                 if let Err(e) = apply_process_affinity(mask) {
-                    eprintln!("[bque bench] Warning: Failed to set core affinity: {}", e);
+                    eprintln!(
+                        "{} Warning: Failed to set core affinity: {}",
+                        theme.badge_bench(),
+                        e
+                    );
                 } else {
                     println!(
-                        "[bque bench] Pinned benchmark to core affinity mask: 0x{:X}",
+                        "{} Pinned benchmark to core affinity mask: 0x{:X}",
+                        theme.badge_bench(),
                         mask
                     );
                 }
             }
-            Err(e) => eprintln!("[bque bench] Warning: Failed to parse affinity spec: {}", e),
+            Err(e) => eprintln!(
+                "{} Warning: Failed to parse affinity spec: {}",
+                theme.badge_bench(),
+                e
+            ),
         }
     }
 
-    println!("[bque bench] Running benchmark with clean CPU: {}", desc);
+    println!(
+        "{} 🧪 Running benchmark with clean CPU: {}",
+        theme.badge_bench(),
+        theme.bold_white(&desc)
+    );
+
     // Pass environment variable for reentrant calls in benchmark
     unsafe {
         std::env::set_var("BQUE_ACTIVE_PID", my_pid.to_string());
@@ -125,17 +151,33 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
 
     // Clean up: resume frozen background builds
     if !frozen_pids.is_empty() {
-        println!("[bque bench] Resuming frozen background build processes...");
+        println!(
+            "{} Resuming frozen background build processes...",
+            theme.badge_bench()
+        );
         match freezer.resume_processes(&frozen_pids) {
-            Ok(count) => println!("[bque bench] Resumed {} processes.", count),
-            Err(e) => eprintln!("[bque bench] Warning: Failed to resume processes: {}", e),
+            Ok(count) => println!(
+                "{} Resumed {} processes.",
+                theme.badge_bench(),
+                theme.bold_green(&count.to_string())
+            ),
+            Err(e) => eprintln!(
+                "{} Warning: Failed to resume processes: {}",
+                theme.badge_bench(),
+                e
+            ),
         }
     }
 
     let _ = storage.clear_bench_state();
     println!(
-        "[bque bench] Benchmark finished with exit code {}.",
-        exit_code
+        "{} Benchmark finished with exit code {}.",
+        theme.badge_bench(),
+        if exit_code == 0 {
+            theme.bold_green(&exit_code.to_string())
+        } else {
+            theme.bold_red(&exit_code.to_string())
+        }
     );
 
     Ok(exit_code)

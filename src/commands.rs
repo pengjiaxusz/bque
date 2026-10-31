@@ -4,8 +4,10 @@ use crate::job::{CpuTopology, JobObject, apply_process_affinity, apply_process_p
 use crate::lock::{BUILD_MUTEX_NAME, NamedMutex};
 use crate::runner::execute_child_command;
 use crate::state::{LockState, StateStorage, WaiterState, is_pid_alive};
+use crate::ui::{ColorTheme, LiveProgressReporter, render_full_dashboard};
 use anyhow::{Result, anyhow};
 use chrono::Utc;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,62 +59,70 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
         };
 
         let mutex = NamedMutex::new(BUILD_MUTEX_NAME);
-        let mut last_reported_sec = 0;
+        let mut reporter = LiveProgressReporter::new(my_pid, desc.clone());
+        let start_wait = std::time::Instant::now();
 
-        let guard_res = mutex.acquire_with_progress(timeout, |elapsed| {
-            // Also wait if paused or benchmark active
-            while let Ok(Some(pause)) = storage.load_pause_state() {
-                println!(
-                    "[bque] Builds are currently paused ('{}'). Waiting...",
-                    pause.reason
-                );
-                std::thread::sleep(Duration::from_secs(2));
-            }
-            while let Ok(Some(bench)) = storage.load_bench_state() {
-                println!(
-                    "[bque] Benchmark '{}' is running on PID {}. Waiting...",
-                    bench.description, bench.pid
-                );
-                std::thread::sleep(Duration::from_secs(2));
+        // Loop until not paused, no benchmark active, and build mutex acquired
+        let guard = loop {
+            if timeout > Duration::ZERO && start_wait.elapsed() >= timeout {
+                let _ = storage.unregister_waiter(my_pid);
+                return Err(anyhow!(
+                    "Timed out waiting for lock '{}' after {:?}",
+                    BUILD_MUTEX_NAME,
+                    timeout
+                ));
             }
 
-            let secs = elapsed.as_secs();
-            if secs >= last_reported_sec + 5 {
-                last_reported_sec = secs;
+            // 1. Check if paused or benchmark active
+            let is_blocked = {
+                let bench = storage.load_bench_state()?;
+                let pause = storage.load_pause_state()?;
+                bench.is_some() || pause.is_some()
+            };
+
+            if is_blocked {
                 if let Ok(status) = storage.get_full_status() {
-                    let mut pos = 1;
-                    for (i, w) in status.waiters.iter().enumerate() {
-                        if w.pid == my_pid {
-                            pos = i + 1;
-                            break;
-                        }
+                    reporter.tick_queue(&status, start_wait.elapsed().as_secs());
+                }
+                std::thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+
+            // 2. Attempt to acquire build mutex with 500ms timeout chunk
+            let chunk_timeout = Duration::from_millis(500);
+            match mutex.acquire_with_progress(chunk_timeout, |_| Ok(())) {
+                Ok(guard) => {
+                    // Double check bench/pause wasn't initiated in the instant of acquisition
+                    if storage.load_bench_state()?.is_none()
+                        && storage.load_pause_state()?.is_none()
+                    {
+                        break guard;
                     }
-                    if let Some(active) = status.active_lock {
-                        println!(
-                            "[bque] Queued at position #{}. Waiting for PID {} ('{}') [elapsed: {}s]...",
-                            pos, active.pid, active.description, secs
-                        );
-                    } else {
-                        println!(
-                            "[bque] Queued at position #{}. Waiting for lock [elapsed: {}s]...",
-                            pos, secs
-                        );
+                    drop(guard);
+                    if let Ok(status) = storage.get_full_status() {
+                        reporter.tick_queue(&status, start_wait.elapsed().as_secs());
+                    }
+                }
+                Err(_) => {
+                    if let Ok(status) = storage.get_full_status() {
+                        reporter.tick_queue(&status, start_wait.elapsed().as_secs());
                     }
                 }
             }
-            Ok(())
-        });
+        };
 
         let _ = storage.unregister_waiter(my_pid);
+        reporter.finish_acquired(start_wait.elapsed().as_secs());
 
-        let g = guard_res?;
-        if g.was_abandoned() {
+        if guard.was_abandoned() {
             println!(
-                "[bque] Notice: Previous lock owner exited abnormally. Mutex ownership safely recovered."
+                "{} {} Previous lock owner exited abnormally. Mutex ownership safely recovered.",
+                reporter.theme.badge_bque(),
+                reporter.theme.bold_yellow("⚠️")
             );
         }
 
-        Some(g)
+        Some(guard)
     } else {
         None
     };
@@ -143,11 +153,15 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
         storage.save_lock_state(&active_state)?;
     }
 
+    let theme = ColorTheme::new();
+
     // Set process priority class (Idle by default)
     if let Err(e) = apply_process_priority(args.priority) {
         eprintln!(
-            "[bque] Warning: Failed to set priority {:?}: {}",
-            args.priority, e
+            "{} Warning: Failed to set priority {:?}: {}",
+            theme.badge_bque(),
+            args.priority,
+            e
         );
     }
 
@@ -157,10 +171,18 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
         match topo.parse_affinity_spec(spec) {
             Ok(mask) => {
                 if let Err(e) = apply_process_affinity(mask) {
-                    eprintln!("[bque] Warning: Failed to set core affinity: {}", e);
+                    eprintln!(
+                        "{} Warning: Failed to set core affinity: {}",
+                        theme.badge_bque(),
+                        e
+                    );
                 }
             }
-            Err(e) => eprintln!("[bque] Warning: Failed to parse affinity spec: {}", e),
+            Err(e) => eprintln!(
+                "{} Warning: Failed to parse affinity spec: {}",
+                theme.badge_bque(),
+                e
+            ),
         }
     }
 
@@ -172,7 +194,8 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
         }
         Err(e) => {
             eprintln!(
-                "[bque] Warning: Job Object creation failed: {}. Continuing without CPU rate throttle.",
+                "{} Warning: Job Object creation failed: {}. Continuing without CPU rate throttle.",
+                theme.badge_bque(),
                 e
             );
             None
@@ -209,88 +232,44 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
 
 pub fn handle_status(args: StatusArgs) -> Result<()> {
     let storage = StateStorage::new()?;
-    let status = storage.get_full_status()?;
 
     if args.json {
+        let status = storage.get_full_status()?;
         let out = serde_json::to_string_pretty(&status)?;
         println!("{}", out);
         return Ok(());
     }
 
-    println!("============================================================");
-    println!("              bque Global Build Queue & Governor            ");
-    println!("============================================================");
+    let theme = ColorTheme::new();
 
-    // Benchmark mode
-    if let Some(bench) = status.active_bench {
-        println!("\n[!] ACTIVE BENCHMARK IN PROGRESS");
-        println!("  PID:         {}", bench.pid);
-        println!("  Command:     {}", bench.command);
-        println!("  Description: {}", bench.description);
-        println!("  Started At:  {}", bench.start_time.to_rfc3339());
-        println!("  Frozen PIDs: {:?}", bench.frozen_pids);
-    }
-
-    // Pause mode
-    if let Some(pause) = status.pause_state {
-        println!("\n[!] BUILDS MANUALLY PAUSED");
-        println!("  Reason:      {}", pause.reason);
-        println!("  Paused At:   {}", pause.paused_at.to_rfc3339());
-        println!("  Paused By:   PID {}", pause.paused_by_pid);
-    }
-
-    // Active lock holder
-    println!("\n[1] Active Lock Holder:");
-    if let Some(lock) = status.active_lock {
-        let elapsed = Utc::now() - lock.start_time;
-        println!("  PID:         {}", lock.pid);
-        println!("  Description: {}", lock.description);
-        println!("  Command:     {}", lock.command);
-        println!("  Working Dir: {}", lock.cwd);
-        println!("  Priority:    {}", lock.priority);
-        println!("  CPU Rate:    {}% (soft-cap)", lock.cpu_rate);
-        println!("  Running For: {}s", elapsed.num_seconds());
-    } else {
-        println!("  (No active lock holder. Build queue is idle)");
-    }
-
-    // Waiters
-    println!("\n[2] Queued Waiters ({}):", status.waiters.len());
-    if status.waiters.is_empty() {
-        println!("  (Queue is empty)");
-    } else {
-        for (i, w) in status.waiters.iter().enumerate() {
-            let elapsed = Utc::now() - w.queued_at;
-            println!(
-                "  #{:<2} PID {:<6} [{:>4}s] {} ('{}')",
-                i + 1,
-                w.pid,
-                elapsed.num_seconds(),
-                w.description,
-                w.cwd
-            );
+    if args.watch {
+        let mut last_count = 0;
+        loop {
+            let status = storage.get_full_status()?;
+            let lines = render_full_dashboard(&status, None, &theme);
+            let mut stdout = std::io::stdout().lock();
+            if theme.enabled && last_count > 0 {
+                let _ = write!(stdout, "\x1b[{}A\r", last_count);
+            }
+            for line in &lines {
+                if theme.enabled {
+                    let _ = writeln!(stdout, "\x1b[2K{}", line);
+                } else {
+                    let _ = writeln!(stdout, "{}", line);
+                }
+            }
+            let _ = stdout.flush();
+            last_count = lines.len();
+            std::thread::sleep(Duration::from_secs(1));
         }
-    }
-
-    // Observers
-    println!("\n[3] Observers ({}):", status.observers.len());
-    if status.observers.is_empty() {
-        println!("  (No observers active)");
     } else {
-        for obs in status.observers {
-            let elapsed = Utc::now() - obs.start_time;
-            println!(
-                "  PID {:<6} [{:>4}s] {} ('{}')",
-                obs.pid,
-                elapsed.num_seconds(),
-                obs.description,
-                obs.command
-            );
+        let status = storage.get_full_status()?;
+        let lines = render_full_dashboard(&status, None, &theme);
+        for line in lines {
+            println!("{}", line);
         }
+        Ok(())
     }
-
-    println!("============================================================");
-    Ok(())
 }
 
 pub fn handle_pause(args: PauseArgs) -> Result<()> {
@@ -301,22 +280,32 @@ pub fn handle_pause(args: PauseArgs) -> Result<()> {
         paused_by_pid: std::process::id(),
     };
     storage.save_pause_state(&state)?;
-    println!("[bque] Background builds successfully paused.");
-    println!("Reason: {}", args.reason);
-    println!("Run 'bque resume' to unpause.");
+    let theme = ColorTheme::new();
+    println!(
+        "{} ⏸️  Background builds successfully paused.",
+        theme.badge_bque()
+    );
+    println!("  Reason: {}", theme.bold_white(&args.reason));
+    println!("  Run '{}' to unpause.", theme.cyan("bque resume"));
     Ok(())
 }
 
 pub fn handle_resume() -> Result<()> {
     let storage = StateStorage::new()?;
     storage.clear_pause_state()?;
-    println!("[bque] Background builds resumed.");
+    let theme = ColorTheme::new();
+    println!("{} ▶️  Background builds resumed.", theme.badge_bque());
     Ok(())
 }
 
 pub fn handle_clean() -> Result<()> {
     let storage = StateStorage::new()?;
     let cleaned = storage.clean_dead_entries()?;
-    println!("[bque] Cleaned {} dead/orphaned state records.", cleaned);
+    let theme = ColorTheme::new();
+    println!(
+        "{} 🧹 Cleaned {} dead/orphaned state records.",
+        theme.badge_bque(),
+        theme.bold_cyan(&cleaned.to_string())
+    );
     Ok(())
 }

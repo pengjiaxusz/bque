@@ -6,11 +6,13 @@ mod job;
 mod lock;
 mod runner;
 mod state;
+pub mod ui;
 
 use clap::Parser;
 use cli::{Cli, Commands};
 
 fn main() -> anyhow::Result<()> {
+    ui::enable_ansi_support();
     let cli = Cli::parse();
 
     let exit_code = match cli.command {
