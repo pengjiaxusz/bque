@@ -5,115 +5,116 @@ use chrono::Utc;
 pub fn render_full_dashboard(
     status: &FullQueueStatus,
     highlight_pid: Option<u32>,
+    live_header: Option<(&str, u64)>, // (spinner_frame, elapsed_secs)
     theme: &ColorTheme,
 ) -> Vec<String> {
-    let mut lines = Vec::new();
+    let mut body_lines = Vec::new();
+    let mut need_spacer = false;
 
-    // Top border
-    let bar_len = 50;
-    let bar = "─".repeat(bar_len);
-    lines.push(format!(
-        "{}{}{}{}{}",
-        theme.dim("╭─ "),
-        theme.bold_cyan("bque"),
-        theme.dim(" • Global Build Queue & Governor "),
-        theme.dim(&bar),
-        ""
-    ));
-
-    // Active Benchmark
+    // 1. Active Benchmark
     if let Some(bench) = &status.active_bench {
-        lines.push(theme.dim("│"));
-        lines.push(format!(
+        if need_spacer {
+            body_lines.push(theme.dim("│"));
+        }
+        body_lines.push(format!(
             "{}  {}",
             theme.dim("│"),
             theme.bold_yellow("🧪 ACTIVE BENCHMARK IN PROGRESS")
         ));
-        lines.push(format!(
+        body_lines.push(format!(
             "{}     PID: {} • {}",
             theme.dim("│"),
             theme.bold_cyan(&bench.pid.to_string()),
-            theme.white(&truncate_str(&bench.description, 60))
+            theme.white(&truncate_str(&bench.description, 50))
         ));
         let elapsed = (Utc::now().timestamp() - bench.start_time.timestamp()).max(0) as u64;
-        lines.push(format!(
+        body_lines.push(format!(
             "{}     Started: {} ago • Frozen processes: {}",
             theme.dim("│"),
             theme.dim(&format_duration_secs(elapsed)),
             theme.bold_yellow(&bench.frozen_pids.len().to_string())
         ));
+        need_spacer = true;
     }
 
-    // Manual Pause
+    // 2. Manual Pause
     if let Some(pause) = &status.pause_state {
-        lines.push(theme.dim("│"));
-        lines.push(format!(
+        if need_spacer {
+            body_lines.push(theme.dim("│"));
+        }
+        body_lines.push(format!(
             "{}  {}",
             theme.dim("│"),
             theme.bold_magenta("⏸️  BUILDS MANUALLY PAUSED")
         ));
-        lines.push(format!(
+        body_lines.push(format!(
             "{}     Reason: {}",
             theme.dim("│"),
             theme.bold_white(&pause.reason)
         ));
         let elapsed = (Utc::now().timestamp() - pause.paused_at.timestamp()).max(0) as u64;
-        lines.push(format!(
+        body_lines.push(format!(
             "{}     Paused by PID: {} ({} ago)",
             theme.dim("│"),
             theme.bold_cyan(&pause.paused_by_pid.to_string()),
             theme.dim(&format_duration_secs(elapsed))
         ));
+        need_spacer = true;
     }
 
-    // Active Lock Holder
-    lines.push(theme.dim("│"));
+    // 3. Active Lock Holder
+    if need_spacer {
+        body_lines.push(theme.dim("│"));
+    }
     if let Some(lock) = &status.active_lock {
         let elapsed = (Utc::now().timestamp() - lock.start_time.timestamp()).max(0) as u64;
-        lines.push(format!(
+        body_lines.push(format!(
             "{}  {}",
             theme.dim("│"),
             theme.bold_green("🏃 ACTIVE BUILD LOCK")
         ));
-        lines.push(format!(
+        body_lines.push(format!(
             "{}     PID: {} • {}",
             theme.dim("│"),
             theme.bold_cyan(&lock.pid.to_string()),
-            theme.bold_white(&truncate_str(&lock.description, 60))
+            theme.bold_white(&truncate_str(&lock.description, 50))
         ));
-        lines.push(format!(
-            "{}     Running: {} • Priority: {} • CPU: {}% (soft-cap)",
-            theme.dim("│"),
-            theme.green(&format_duration_secs(elapsed)),
-            theme.cyan(&lock.priority),
-            theme.bold(&lock.cpu_rate.to_string())
-        ));
-        lines.push(format!(
+        lines_priority_cpu(
+            &mut body_lines,
+            theme,
+            elapsed,
+            &lock.priority,
+            lock.cpu_rate,
+        );
+        body_lines.push(format!(
             "{}     CWD: {}",
             theme.dim("│"),
-            theme.dim(&truncate_str(&lock.cwd, 65))
+            theme.dim(&truncate_str(&lock.cwd, 50))
         ));
     } else {
-        lines.push(format!(
+        body_lines.push(format!(
             "{}  {}",
             theme.dim("│"),
             theme.bold_green("🟢 BUILD QUEUE IDLE")
         ));
-        lines.push(format!(
+        body_lines.push(format!(
             "{}     (No active builds. Lock is immediately available)",
             theme.dim("│")
         ));
     }
+    need_spacer = true;
 
-    // Waiters
-    lines.push(theme.dim("│"));
-    lines.push(format!(
+    // 4. Waiters
+    if need_spacer {
+        body_lines.push(theme.dim("│"));
+    }
+    body_lines.push(format!(
         "{}  {}",
         theme.dim("│"),
         theme.bold_cyan(&format!("⏳ QUEUED WAITERS ({})", status.waiters.len()))
     ));
     if status.waiters.is_empty() {
-        lines.push(format!(
+        body_lines.push(format!(
             "{}     (No waiting tasks in queue)",
             theme.dim("│")
         ));
@@ -126,214 +127,123 @@ pub fn render_full_dashboard(
             let time_str = format!("[{:>5}]", format_duration_secs(elapsed));
 
             if is_me {
-                lines.push(format!(
+                body_lines.push(format!(
                     "{}   {} {:<3} {:<10} {} {} (You)",
                     theme.dim("│"),
                     theme.bold_cyan("▸"),
                     theme.bold_cyan(&num),
                     theme.bold_cyan(&pid_str),
                     theme.dim(&time_str),
-                    theme.bold_white(&truncate_str(&w.description, 45))
+                    theme.bold_white(&truncate_str(&w.description, 36))
                 ));
             } else {
-                lines.push(format!(
+                body_lines.push(format!(
                     "{}     {:<3} {:<10} {} {}",
                     theme.dim("│"),
                     theme.cyan(&num),
                     theme.cyan(&pid_str),
                     theme.dim(&time_str),
-                    theme.white(&truncate_str(&w.description, 45))
+                    theme.white(&truncate_str(&w.description, 36))
                 ));
             }
         }
     }
 
-    // Observers
+    // 5. Observers
     if !status.observers.is_empty() {
-        lines.push(theme.dim("│"));
-        lines.push(format!(
+        body_lines.push(theme.dim("│"));
+        body_lines.push(format!(
             "{}  {}",
             theme.dim("│"),
             theme.bold_white(&format!("👀 OBSERVERS ({})", status.observers.len()))
         ));
         for obs in &status.observers {
             let elapsed = (Utc::now().timestamp() - obs.start_time.timestamp()).max(0) as u64;
-            lines.push(format!(
+            body_lines.push(format!(
                 "{}     PID {:<6} [{:>5}] {}",
                 theme.dim("│"),
                 theme.cyan(&obs.pid.to_string()),
                 theme.dim(&format_duration_secs(elapsed)),
-                theme.white(&truncate_str(&obs.description, 50))
+                theme.white(&truncate_str(&obs.description, 40))
             ));
         }
     }
 
-    // Bottom border
-    lines.push(theme.dim("│"));
-    lines.push(format!(
-        "{}{}",
-        theme.dim("╰─"),
-        theme.dim(&"─".repeat(bar_len + 30))
-    ));
-
-    lines
-}
-
-pub fn render_compact_queue_widget(
-    status: &FullQueueStatus,
-    my_pid: u32,
-    my_desc: &str,
-    elapsed_secs: u64,
-    spinner_frame: &str,
-    theme: &ColorTheme,
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    let bar_len = 45;
-
-    // Header with animated spinner and timer
-    lines.push(format!(
-        "{}{}{}{}{}{}{}",
-        theme.dim("╭─ "),
-        theme.bold_cyan("bque queue"),
-        theme.dim(" ── "),
-        theme.bold_yellow(spinner_frame),
-        theme.dim(" Waiting for lock ["),
-        theme.bold_cyan(&format_duration_secs(elapsed_secs)),
-        theme.dim(&format!("] ─{}", "─".repeat(bar_len)))
-    ));
-
-    // Blocker status
-    if let Some(bench) = &status.active_bench {
-        let b_elapsed = (Utc::now().timestamp() - bench.start_time.timestamp()).max(0) as u64;
-        lines.push(format!(
-            "{} {} Blocked by Benchmark: PID {} ('{}')",
-            theme.dim("│"),
-            theme.bold_yellow("🧪"),
-            theme.bold_cyan(&bench.pid.to_string()),
-            theme.bold_yellow(&truncate_str(&bench.description, 40))
-        ));
-        lines.push(format!(
-            "{}    Running for: {} • Background builds frozen",
-            theme.dim("│"),
-            theme.dim(&format_duration_secs(b_elapsed))
-        ));
-    } else if let Some(pause) = &status.pause_state {
-        lines.push(format!(
-            "{} {} Blocked by Manual Pause: '{}'",
-            theme.dim("│"),
-            theme.bold_magenta("⏸️ "),
-            theme.bold_white(&pause.reason)
-        ));
-    } else if let Some(lock) = &status.active_lock {
-        let l_elapsed = (Utc::now().timestamp() - lock.start_time.timestamp()).max(0) as u64;
-        lines.push(format!(
-            "{} {} Lock Holder: PID {} ('{}')",
-            theme.dim("│"),
-            theme.bold_green("🏃"),
-            theme.bold_cyan(&lock.pid.to_string()),
-            theme.white(&truncate_str(&lock.description, 40))
-        ));
-        lines.push(format!(
-            "{}    Running for: {} • Priority: {} • CPU: {}%",
-            theme.dim("│"),
-            theme.green(&format_duration_secs(l_elapsed)),
-            theme.cyan(&lock.priority),
-            theme.dim(&lock.cpu_rate.to_string())
-        ));
-    } else {
-        lines.push(format!(
-            "{} {} Lock is clearing, acquiring ownership...",
-            theme.dim("│"),
-            theme.bold_green("🟢")
-        ));
-    }
-
-    // Queue position
-    let pos = status
-        .waiters
+    // Determine target card width dynamically based on content
+    let content_max = body_lines
         .iter()
-        .position(|w| w.pid == my_pid)
-        .map(|i| i + 1)
-        .unwrap_or(1);
-    let total = status.waiters.len().max(1);
+        .map(|l| super::color::strip_ansi(l).chars().count())
+        .max()
+        .unwrap_or(50);
 
-    if total > 1 {
-        lines.push(format!(
-            "{} {} Queue Position: {} of {}",
-            theme.dim("│"),
-            theme.bold_cyan("⏳"),
-            theme.bold_cyan(&format!("#{}", pos)),
-            theme.dim(&total.to_string())
-        ));
-    } else {
-        lines.push(format!(
-            "{} {} Queue Position: {} (Next in line)",
-            theme.dim("│"),
-            theme.bold_cyan("⏳"),
-            theme.bold_cyan(&format!("#{}", pos))
-        ));
-    }
+    // Build top and bottom lines with exact matched length
+    let (top_line, total_width) = match live_header {
+        Some((spinner, elapsed_secs)) => {
+            let time_str = format_duration_secs(elapsed_secs);
+            // Header prefix: "╭─ bque • Global Build Queue & Governor ── " (45) + spinner (1) + " [" + time + "] "
+            let prefix_len = 45 + 1 + 2 + time_str.chars().count() + 2;
+            let target = (content_max + 3).max(prefix_len + 4).min(72);
+            let trailing = target.saturating_sub(prefix_len).max(3);
+            let total = prefix_len + trailing;
+            let line = format!(
+                "{}{}{}{}{}{}{}{}{}",
+                theme.dim("╭─ "),
+                theme.bold_cyan("bque"),
+                theme.dim(" • Global Build Queue & Governor ── "),
+                theme.bold_yellow(spinner),
+                theme.dim(" ["),
+                theme.bold_cyan(&time_str),
+                theme.dim("] "),
+                theme.dim(&"─".repeat(trailing)),
+                ""
+            );
+            (line, total)
+        }
+        None => {
+            // Standard static header: "╭─ bque • Global Build Queue & Governor " (42)
+            let prefix_len = 42;
+            let target = (content_max + 3).max(prefix_len + 4).min(72);
+            let trailing = target.saturating_sub(prefix_len).max(4);
+            let total = prefix_len + trailing;
+            let line = format!(
+                "{}{}{}{}",
+                theme.dim("╭─ "),
+                theme.bold_cyan("bque"),
+                theme.dim(" • Global Build Queue & Governor "),
+                theme.dim(&"─".repeat(trailing))
+            );
+            (line, total)
+        }
+    };
 
-    // My Task line
-    lines.push(format!(
-        "{} {} Your Task: PID {} ('{}')",
-        theme.dim("│"),
-        theme.bold_cyan("▸"),
-        theme.cyan(&my_pid.to_string()),
-        theme.bold_white(&truncate_str(my_desc, 45))
-    ));
-
-    // Bottom border
-    lines.push(format!(
+    let bottom_prefix_len = 2; // "╰─"
+    let bottom_trailing = total_width.saturating_sub(bottom_prefix_len);
+    let bottom_line = format!(
         "{}{}",
         theme.dim("╰─"),
-        theme.dim(&"─".repeat(bar_len + 25))
-    ));
+        theme.dim(&"─".repeat(bottom_trailing))
+    );
 
-    lines
+    let mut result = Vec::with_capacity(body_lines.len() + 2);
+    result.push(top_line);
+    result.extend(body_lines);
+    result.push(bottom_line);
+
+    result
 }
 
-pub fn render_compact_bench_widget(
-    prev_bench: Option<(&u32, &str)>,
-    elapsed_secs: u64,
-    spinner_frame: &str,
+fn lines_priority_cpu(
+    lines: &mut Vec<String>,
     theme: &ColorTheme,
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    let bar_len = 45;
-
+    elapsed: u64,
+    priority: &str,
+    cpu_rate: u32,
+) {
     lines.push(format!(
-        "{}{}{}{}{}{}{}",
-        theme.dim("╭─ "),
-        theme.bold_magenta("bque bench"),
-        theme.dim(" ── "),
-        theme.bold_yellow(spinner_frame),
-        theme.dim(" Waiting for exclusive lock ["),
-        theme.bold_cyan(&format_duration_secs(elapsed_secs)),
-        theme.dim(&format!("] ─{}", "─".repeat(bar_len)))
+        "{}     Running: {} • Priority: {} • CPU: {}% (soft-cap)",
+        theme.dim("│"),
+        theme.green(&format_duration_secs(elapsed)),
+        theme.cyan(priority),
+        theme.bold(&cpu_rate.to_string())
     ));
-
-    if let Some((pid, desc)) = prev_bench {
-        lines.push(format!(
-            "{} {} Blocked by previous benchmark: PID {} ('{}')",
-            theme.dim("│"),
-            theme.bold_yellow("🧪"),
-            theme.bold_cyan(&pid.to_string()),
-            theme.white(&truncate_str(desc, 40))
-        ));
-    } else {
-        lines.push(format!(
-            "{} {} Waiting for previous benchmark to release lock...",
-            theme.dim("│"),
-            theme.bold_yellow("🧪")
-        ));
-    }
-
-    lines.push(format!(
-        "{}{}",
-        theme.dim("╰─"),
-        theme.dim(&"─".repeat(bar_len + 25))
-    ));
-
-    lines
 }

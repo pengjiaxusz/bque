@@ -1,5 +1,5 @@
 use super::color::{ColorTheme, format_duration_secs};
-use super::status::{render_compact_bench_widget, render_compact_queue_widget};
+use super::status::render_full_dashboard;
 use crate::state::FullQueueStatus;
 use std::io::Write;
 
@@ -33,12 +33,10 @@ impl LiveProgressReporter {
             let spinner = SPINNER_FRAMES[self.spinner_idx % SPINNER_FRAMES.len()];
             self.spinner_idx += 1;
 
-            let lines = render_compact_queue_widget(
+            let lines = render_full_dashboard(
                 status,
-                self.my_pid,
-                &self.my_desc,
-                elapsed_secs,
-                spinner,
+                Some(self.my_pid),
+                Some((spinner, elapsed_secs)),
                 &self.theme,
             );
 
@@ -116,12 +114,17 @@ impl LiveProgressReporter {
         }
     }
 
-    pub fn tick_bench(&mut self, prev_bench: Option<(&u32, &str)>, elapsed_secs: u64) {
+    pub fn tick_bench(&mut self, status: &FullQueueStatus, elapsed_secs: u64) {
         if self.theme.enabled {
             let spinner = SPINNER_FRAMES[self.spinner_idx % SPINNER_FRAMES.len()];
             self.spinner_idx += 1;
 
-            let lines = render_compact_bench_widget(prev_bench, elapsed_secs, spinner, &self.theme);
+            let lines = render_full_dashboard(
+                status,
+                Some(self.my_pid),
+                Some((spinner, elapsed_secs)),
+                &self.theme,
+            );
 
             let mut stdout = std::io::stdout().lock();
             if self.last_line_count > 0 {

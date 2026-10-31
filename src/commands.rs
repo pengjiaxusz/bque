@@ -246,7 +246,7 @@ pub fn handle_status(args: StatusArgs) -> Result<()> {
         let mut last_count = 0;
         loop {
             let status = storage.get_full_status()?;
-            let lines = render_full_dashboard(&status, None, &theme);
+            let lines = render_full_dashboard(&status, None, None, &theme);
             let mut stdout = std::io::stdout().lock();
             if theme.enabled && last_count > 0 {
                 let _ = write!(stdout, "\x1b[{}A\r", last_count);
@@ -264,7 +264,7 @@ pub fn handle_status(args: StatusArgs) -> Result<()> {
         }
     } else {
         let status = storage.get_full_status()?;
-        let lines = render_full_dashboard(&status, None, &theme);
+        let lines = render_full_dashboard(&status, None, None, &theme);
         for line in lines {
             println!("{}", line);
         }

@@ -40,13 +40,11 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
 
     let mut reporter = LiveProgressReporter::new(my_pid, desc.clone());
     let start_wait = std::time::Instant::now();
-    let prev_bench = storage.load_bench_state().ok().flatten();
 
     let _guard = bench_mutex.acquire_with_progress(timeout, |elapsed| {
-        let prev_info = prev_bench
-            .as_ref()
-            .map(|b| (&b.pid, b.description.as_str()));
-        reporter.tick_bench(prev_info, elapsed.as_secs());
+        if let Ok(status) = storage.get_full_status() {
+            reporter.tick_bench(&status, elapsed.as_secs());
+        }
         Ok(())
     })?;
     reporter.finish_bench_acquired(start_wait.elapsed().as_secs());
