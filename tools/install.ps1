@@ -54,10 +54,12 @@ function Download-FileWithFallback {
     )
 
     # 2.1 Prefer curl.exe (inherits proxy settings, TLS 1.3, fast)
+    # Using Start-Process isolates stdin so piped executions do not get drained
     $curlPath = "C:\Windows\System32\curl.exe"
     if (Test-Path $curlPath) {
-        & $curlPath -fLs --connect-timeout 15 --max-time 60 -o $Destination $Url 2>$null
-        if ((Test-Path $Destination) -and ((Get-Item $Destination).Length -gt 100000)) {
+        $argList = @("-fLs", "--connect-timeout", "15", "--max-time", "60", "-o", $Destination, $Url)
+        $proc = Start-Process -FilePath $curlPath -ArgumentList $argList -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
+        if ($proc -and $proc.ExitCode -eq 0 -and (Test-Path $Destination) -and ((Get-Item $Destination).Length -gt 100000)) {
             return $true
         }
     }
