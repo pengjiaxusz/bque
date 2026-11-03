@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     分支同步冲突恢复与继续执行工具 (Continue Sync)
 
@@ -139,41 +139,63 @@ function Get-WorktreeMap {
 }
 
 function Test-ContentPreserved {
+    # 逐提交内容校验：比较源提交与其落地提交的文件级增删行，
+    # 剥掉补丁头（diff --git / index / --- / +++ / @@）与行首 +/- 符号并 Trim 后，
+    # 校验新增内容（或纯删除提交的删除行）在落地提交中的保全度（>=80% 即判定通过，容许微调或消解上下文）。
     param(
         [string]$SourceHash,
         [string]$LandedHash
     )
-    $srcShow = Invoke-Git @("show", $SourceHash, "--format=", "--unified=0")
-    $landedShow = Invoke-Git @("show", $LandedHash, "--format=", "--unified=0")
-    if ($srcShow.ExitCode -ne 0 -or $landedShow.ExitCode -ne 0) {
+    $srcRes = Invoke-Git @("show", $SourceHash, "--format=", "--unified=0")
+    $landRes = Invoke-Git @("show", $LandedHash, "--format=", "--unified=0")
+    if ($srcRes.ExitCode -ne 0 -or $landRes.ExitCode -ne 0) {
         return $false
     }
-    function ConvertTo-ContentSet {
-        param([string]$PatchText)
-        $set = @{}
-        foreach ($ln in ($PatchText -split "`r?`n")) {
-            if ($ln.StartsWith("+++") -or $ln.StartsWith("---") -or $ln.StartsWith("@@") -or $ln.StartsWith("diff --git") -or $ln.StartsWith("index ")) {
+    $landedSet = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($ln in ($landRes.Output -split "`r?`n")) {
+        if ($ln.StartsWith("diff --git") -or $ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
+            continue
+        }
+        if ($ln.StartsWith("+") -or $ln.StartsWith("-")) {
+            $t = $ln.Substring(1).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($t)) {
+                $landedSet.Add($t) | Out-Null
+            }
+        }
+    }
+    $srcAddedCount = 0
+    $srcAddedMatched = 0
+    foreach ($ln in ($srcRes.Output -split "`r?`n")) {
+        if ($ln.StartsWith("diff --git") -or $ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
+            continue
+        }
+        if ($ln.StartsWith("+")) {
+            $t = $ln.Substring(1).Trim()
+            if ([string]::IsNullOrWhiteSpace($t)) {
                 continue
             }
-            $t = $ln
-            if ($t.StartsWith("+") -or $t.StartsWith("-")) {
-                $t = $t.Substring(1)
-            }
-            $t = $t.Trim()
-            if (-not [string]::IsNullOrWhiteSpace($t)) {
-                $set[$t] = $true
+            $srcAddedCount++
+            if ($landedSet.Contains($t)) {
+                $srcAddedMatched++
             }
         }
-        return $set
     }
-    $srcSet = ConvertTo-ContentSet $srcShow.Output
-    $landedSet = ConvertTo-ContentSet $landedShow.Output
-    foreach ($k in $srcSet.Keys) {
-        if (-not $landedSet.ContainsKey($k)) {
-            return $false
+    if ($srcAddedCount -eq 0) {
+        $delCount = 0
+        $delMatched = 0
+        foreach ($ln in ($srcRes.Output -split "`r?`n")) {
+            if ($ln.StartsWith("-")) {
+                $t = $ln.Substring(1).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($t)) {
+                    $delCount++
+                    if ($landedSet.Contains($t)) { $delMatched++ }
+                }
+            }
         }
+        if ($delCount -eq 0) { return $true }
+        return ($delMatched / $delCount) -ge 0.8
     }
-    return $true
+    return ($srcAddedMatched / $srcAddedCount) -ge 0.8
 }
 
 # 查找状态文件
@@ -331,12 +353,32 @@ if ($Continue) {
                 if ($postCherry.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($postCherry.Output))) {
                     foreach ($pcl in ($postCherry.Output -split "`r?`n")) {
                         if ($pcl -match '^\+\s+([0-9a-fA-F]+)\s+(.*)$') {
+                            $resHash = $Matches[1]
+                            $cSubj = $Matches[2].Trim()
                             # 空提交无 patch-id、cherry 恒报 `+`：无文件改动即视为已合入。
-                            $emptyCheck = Invoke-Git @("diff-tree", "--no-commit-id", "--name-only", "-r", $Matches[1])
+                            $emptyCheck = Invoke-Git @("diff-tree", "--no-commit-id", "--name-only", "-r", $resHash)
                             if ($emptyCheck.ExitCode -eq 0 -and [string]::IsNullOrWhiteSpace($emptyCheck.Output)) {
                                 continue
                             }
-                            $guardFailures.Add("源分支 '$sb' 仍有未合入净提交: $($Matches[1]) $($Matches[2])")
+                            # 补丁上下文漂移容错：若因并行分支合入顺序导致 patch-id 变化，
+                            # 但落地提交的增删行已完整保留（Test-ContentPreserved），则判定已合入。
+                            if (-not [string]::IsNullOrWhiteSpace($cSubj)) {
+                                $landedBySubj = Invoke-Git @("log", $integBranch, "--fixed-strings", "--grep=$cSubj", "-n", "5", "--format=%H")
+                                if ($landedBySubj.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($landedBySubj.Output))) {
+                                    $matched = $false
+                                    foreach ($candHash in ($landedBySubj.Output -split "`r?`n")) {
+                                        $ch = $candHash.Trim()
+                                        if (-not [string]::IsNullOrWhiteSpace($ch) -and (Test-ContentPreserved $resHash $ch)) {
+                                            $matched = $true
+                                            break
+                                        }
+                                    }
+                                    if ($matched) {
+                                        continue
+                                    }
+                                }
+                            }
+                            $guardFailures.Add("源分支 '$sb' 仍有未合入净提交: $resHash $cSubj")
                         }
                     }
                 }

@@ -8,6 +8,7 @@ export default {
       2,
       'always',
       [
+        'agent',
         'cli',
         'lock',
         'job',

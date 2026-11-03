@@ -10,7 +10,10 @@
   "scripts": {
     "prepare": "node -e \"try{require('child_process').execSync('lefthook install',{stdio:'inherit'})}catch{console.log('尚未 git init，跳过 lefthook 安装；可先 git init 再运行 pnpm lefthook:install')}\"",
     "lefthook:install": "lefthook install",
-    "commitlint": "commitlint"
+    "commitlint": "commitlint",
+    "mcp:doctor": "node .agents/skills/mcp-bootstrap/scripts/ensure-mcp.mjs doctor",
+    "mcp:install": "node .agents/skills/mcp-bootstrap/scripts/ensure-mcp.mjs install",
+    "mcp:sync": "node .agents/skills/mcp-bootstrap/scripts/ensure-mcp.mjs sync --write"
   },
   "devDependencies": {
     "@commitlint/cli": "latest",

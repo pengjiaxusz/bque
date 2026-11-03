@@ -24,6 +24,7 @@
 - `caveman` — see `.agents/skills/caveman/SKILL.md`
 - `git-workflow` — see `.agents/skills/git-workflow/SKILL.md`
 - `grill-me` — see `.agents/skills/grill-me/SKILL.md`
+- `mcp-bootstrap` — see `.agents/skills/mcp-bootstrap/SKILL.md`
 - `subrepo-sync` — see `.agents/skills/subrepo-sync/SKILL.md`
 - `template-sync` — see `.agents/skills/template-sync/SKILL.md`
 - `write-a-skill` — see `.agents/skills/write-a-skill/SKILL.md`

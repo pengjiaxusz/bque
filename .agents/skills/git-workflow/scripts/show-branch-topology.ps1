@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     只读全分支拓扑与净贡献巡检工具 (Show Branch Topology)
 
@@ -94,6 +94,63 @@ function Invoke-Git {
         Output   = $outTask.Result.Trim()
         Error    = $errTask.Result.Trim()
     }
+}
+
+function Test-ContentPreserved {
+    param(
+        [string]$SourceHash,
+        [string]$LandedHash
+    )
+    $srcRes = Invoke-Git @("show", $SourceHash, "--format=", "--unified=0")
+    $landRes = Invoke-Git @("show", $LandedHash, "--format=", "--unified=0")
+    if ($srcRes.ExitCode -ne 0 -or $landRes.ExitCode -ne 0) {
+        return $false
+    }
+    $landedSet = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($ln in ($landRes.Output -split "`r?`n")) {
+        if ($ln.StartsWith("diff --git") -or $ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
+            continue
+        }
+        if ($ln.StartsWith("+") -or $ln.StartsWith("-")) {
+            $t = $ln.Substring(1).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($t)) {
+                $landedSet.Add($t) | Out-Null
+            }
+        }
+    }
+    $srcAddedCount = 0
+    $srcAddedMatched = 0
+    foreach ($ln in ($srcRes.Output -split "`r?`n")) {
+        if ($ln.StartsWith("diff --git") -or $ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
+            continue
+        }
+        if ($ln.StartsWith("+")) {
+            $t = $ln.Substring(1).Trim()
+            if ([string]::IsNullOrWhiteSpace($t)) {
+                continue
+            }
+            $srcAddedCount++
+            if ($landedSet.Contains($t)) {
+                $srcAddedMatched++
+            }
+        }
+    }
+    if ($srcAddedCount -eq 0) {
+        $delCount = 0
+        $delMatched = 0
+        foreach ($ln in ($srcRes.Output -split "`r?`n")) {
+            if ($ln.StartsWith("-")) {
+                $t = $ln.Substring(1).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($t)) {
+                    $delCount++
+                    if ($landedSet.Contains($t)) { $delMatched++ }
+                }
+            }
+        }
+        if ($delCount -eq 0) { return $true }
+        return ($delMatched / $delCount) -ge 0.8
+    }
+    return ($srcAddedMatched / $srcAddedCount) -ge 0.8
 }
 
 function Resolve-IntegrationBranch {
@@ -335,8 +392,27 @@ foreach ($bName in ($allBranchNames | Sort-Object)) {
         if ($cherryRes.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($cherryRes.Output))) {
             foreach ($cline in ($cherryRes.Output -split "`r?`n")) {
                 if ($cline -match '^\+\s+([0-9a-fA-F]+)\s+(.*)$') {
+                    $resHash = $Matches[1]
+                    $cSubj = $Matches[2].Trim()
+                    # 补丁上下文漂移容错：若集成分支上已存在同名且内容保全的提交，则判定为已合入
+                    if (-not [string]::IsNullOrWhiteSpace($cSubj)) {
+                        $landedBySubj = Invoke-Git @("log", $IntegrationBranch, "--fixed-strings", "--grep=$cSubj", "-n", "5", "--format=%H")
+                        if ($landedBySubj.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($landedBySubj.Output))) {
+                            $matched = $false
+                            foreach ($candHash in ($landedBySubj.Output -split "`r?`n")) {
+                                $ch = $candHash.Trim()
+                                if (-not [string]::IsNullOrWhiteSpace($ch) -and (Test-ContentPreserved $resHash $ch)) {
+                                    $matched = $true
+                                    break
+                                }
+                            }
+                            if ($matched) {
+                                continue
+                            }
+                        }
+                    }
                     $netCount++
-                    $netList.Add("$($Matches[1].Substring(0, [Math]::Min(7, $Matches[1].Length))) $($Matches[2])")
+                    $netList.Add("$($resHash.Substring(0, [Math]::Min(7, $resHash.Length))) $cSubj")
                 }
             }
         }
