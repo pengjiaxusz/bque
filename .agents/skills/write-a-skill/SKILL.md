@@ -133,10 +133,13 @@ After drafting, verify:
 - [ ] Concrete examples included
 - [ ] References are at most one level deep
 - [ ] Bilingual requirements met (see below)
+- [ ] Scripts (if any) written in English (see below)
 
 ## Bilingual & Framework Requirements (this repo)
 
 - All agent-layer content (this `SKILL.md` + `AGENTS.md`) must be bilingual via `{% if options["skill_lang"] == "en" %}` ... `{% else %}` ... `{% endif %}` branches (zh is default); frontmatter `description` must also branch.
+- **Only documentation is bilingual — code is not.** Scripts under `.agents/skills/*/scripts/` are always English: identifiers, structured field names (`type` / `source` / `entry` …), comments, and log output. They are shared infrastructure executed by agents, CI and other tools, so Chinese identifiers break encoding, diffing and shell/tooling hand-off. Translate the intent into `SKILL.md` instead of localizing the script.
+- Four independent language axes: `chinese_programming` (identifiers in the *target project's* code), `skill_lang` (documentation language), `commit_zh` (commit message language), and skill scripts (always English, no option).
 - Copy the structure of the `commit` skill for new skills; when adding a language, extend the `skill_lang` validation in CLI / GUI / core.
 - `SKILL.md` = managed framework block (`PENGJ_TEMPLATE_START/END`, replaced in place on `update`) + project-specific area **outside** the block (never overwritten). Document-style customization and commit-gate definitions live outside the block; executable gate form is project-defined.
 

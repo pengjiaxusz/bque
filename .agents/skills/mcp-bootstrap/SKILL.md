@@ -37,7 +37,13 @@ A project without `.mcp.json` is treated as "no project-level MCP": all three co
 2. Needs a real install or a side artifact? Add a recipe — either the built-in table in the script, or `scripts/mcp/recipes.local.json` (same shape, project-owned, survives template updates). Pure `npx` / `uvx` servers need no recipe.
 3. `sync --write` → `install` → `doctor`.
 
-Recipe fields: `类型` (`uv-git` installs via `uv tool install`; `none` means already on PATH), `源` (`git+https://…`), `入口` (executable name), `扩展` (`从` / `到`), `启用` (`文件` / `键` / `值`), `要求` (host processes that must be closed). Paths accept `~`, `%VAR%`, `$VAR`.
+Recipe fields: `type` (`uv-git` installs via `uv tool install`; `none` means already on PATH), `source` (`git+https://…`), `entry` (executable name), `globalName` (name used in global configs), `extension` (`from` / `to`), `enable` (`file` / `key` / `value`), `requires` (host processes that must be closed), `hint` (printed by `type: none`). Paths accept `~`, `%VAR%`, `$VAR`.
+
+The script is written in English on purpose — identifiers, field names, comments and log lines. It is shared infrastructure executed by agents, CI and other tools, so it stays out of the bilingual doc split: Chinese explanation belongs in this `SKILL.md`, never inside the script.
+
+Changing `source` is destructive in a useful way: a source cache pointing at a different URL is re-cloned, and a uv tool whose receipt says `git=…` no longer matches the recipe is reinstalled with `--force`. Switching from upstream to your own fork needs no manual cache cleanup.
+
+Do not judge a cold start by seconds: right after install the first handshake has to write bytecode caches and get past antivirus scanning — measured 8s+ the first time and 1.2s the next, so the timeout defaults to 20s.
 
 ## Red lines
 

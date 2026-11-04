@@ -34,6 +34,7 @@
 - A skill file = managed framework + project-specific area: inside `SKILL.md`, the `PENGJ_TEMPLATE_START/END` block holds the template framework (replaced in place on update); **content outside the block belongs to the project** and is never touched by template updates.
 - Document-style customization (domain checklists, judgment tables, red lines) goes directly into the project-specific area outside the block — keep everything in one file so a single read yields all conventions; do not create external files.
 - Executable pre-commit gates are project-defined (any language, any tool — script, task runner, or plain checklist); document how to invoke them in the skill's project-specific area. The framework prescribes no implementation.
+- **Scripts under `.agents/skills/*/scripts/` are written in English** — identifiers, structured field names, comments and log output — regardless of `skill_lang`. They are shared infrastructure run by agents, CI and other tools; put the Chinese explanation in `SKILL.md`, never in the script.
 - Legacy fully-custom skills (no managed block) are taken over automatically on adopt/update: the template page wins entirely (frontmatter incl. description is overwritten) and the original body moves down into a transition zone (temporary double flow). Merge domain differences into the project-specific area, then delete the zone.
 
 ## Rust conventions

@@ -1,339 +1,372 @@
 #!/usr/bin/env node
-// 项目 MCP 自举：校验 / 安装 / 同步，全部只依赖 Node 内置模块 + 本机的 uv、git
+// Project-local MCP bootstrap: verify / install / sync, using only Node built-ins plus the
+// local uv and git.
 //
-// 设计取舍：不做「附带 exe」。
-//   - exe 要按平台各带一份（win/mac/linux × x64/arm64），进 git 会膨胀且不可审阅；
-//   - 杀软对来路不明的 exe 容易误报，用户也没法 diff；
-//   - 真正需要的安装动作只有几步（uv tool install / 拷目录 / 写 JSON），用脚本表达足够，
-//     而且出问题能直接读源码定位。
+// Design choice: no bundled executables.
+//   - An exe needs one copy per platform (win/mac/linux x x64/arm64); committing them bloats
+//     the repo and cannot be reviewed;
+//   - antivirus software flags unknown binaries, and users cannot diff them;
+//   - the actual install steps are few (uv tool install / copy a directory / write JSON), so a
+//     script expresses them well enough — and when something breaks you can read the source.
 //
-// 单一事实源：项目根的 .mcp.json（命令写裸名，跨机器可移植）
-// 安装配方：本文件的 配方 表 + 项目可选的 scripts/mcp/recipes.local.json（同名覆盖）
+// Single source of truth: the project-root .mcp.json (commands are bare names, portable across
+// machines).
+// Install recipes: the RECIPES table below, plus an optional project file
+// scripts/mcp/recipes.local.json (same shape, overrides by name).
 //
-// 用法（在项目根执行，或任意子目录——脚本会向上找 .mcp.json）：
+// Usage (run from the project root, or any subdirectory — the script walks up to find .mcp.json):
 //   node .agents/skills/mcp-bootstrap/scripts/ensure-mcp.mjs              # = doctor
 //   node .agents/skills/mcp-bootstrap/scripts/ensure-mcp.mjs doctor [--static]
 //   node .agents/skills/mcp-bootstrap/scripts/ensure-mcp.mjs install [name] [--global]
 //   node .agents/skills/mcp-bootstrap/scripts/ensure-mcp.mjs sync [--write]
 //
-// 退出码：0 全部正常；1 存在需要处理的问题（doctor 用）
+// Exit codes: 0 everything is fine; 1 there are problems to fix (doctor).
 
 import { spawn, spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 
-const 源码缓存 = join(homedir(), '.pengj-mcp', 'src');
+const SOURCE_CACHE = join(homedir(), '.pengj-mcp', 'src');
 const APPDATA = process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming');
 
-// 需要「真安装 + 附属产物」的配方；其余 MCP 视为已在 PATH 上，doctor 只校验不安装
-const 配方 = {
+// Recipes that need a real install plus a side artifact. Any other server is assumed to be on
+// PATH already: doctor only verifies it, install does nothing.
+const RECIPES = {
   'renderdoc-mcp': {
-    类型: 'uv-git',
-    源: 'git+https://github.com/halby24/RenderDocMCP',
-    入口: 'renderdoc-mcp',
-    // 全局配置里用的名字与 pengj-templates 的 mcp 子命令保持一致，避免同名服务器写两份
-    全局名: 'renderdoc',
-    扩展: {
-      从: 'renderdoc_extension',
-      到: join(APPDATA, 'qrenderdoc', 'extensions', 'renderdoc_mcp_bridge'),
+    type: 'uv-git',
+    // Private fork: the upstream extension hard-depends on PySide2, while a self-built RenderDoc
+    // is often configured with PYSIDE2_ENABLED=0, so the upstream copy fails at import time.
+    // The fork adds a thread-polling fallback for builds without PySide2.
+    source: 'git+https://github.com/pengjiaxusz/RenderDocMCP',
+    entry: 'renderdoc-mcp',
+    // The global config uses the same name as the pengj-templates mcp subcommand, so one server
+    // never ends up written twice under two names.
+    globalName: 'renderdoc',
+    extension: {
+      from: 'renderdoc_extension',
+      to: join(APPDATA, 'qrenderdoc', 'extensions', 'renderdoc_mcp_bridge'),
     },
-    启用: {
-      文件: join(APPDATA, 'qrenderdoc', 'UI.config'),
-      键: 'AlwaysLoad_Extensions',
-      值: 'renderdoc_mcp_bridge',
+    enable: {
+      file: join(APPDATA, 'qrenderdoc', 'UI.config'),
+      key: 'AlwaysLoad_Extensions',
+      value: 'renderdoc_mcp_bridge',
     },
-    要求: ['qrenderdoc'],
+    requires: ['qrenderdoc'],
   },
   'playwright-mcp': {
-    类型: 'none',
-    提示: 'npm i -g @playwright/mcp（或改用 npx @playwright/mcp）',
+    type: 'none',
+    hint: 'npm i -g @playwright/mcp (or run it through npx @playwright/mcp)',
   },
 };
 
-// 以 .mcp.json 为源要分发到的项目级配置；变体决定远程字段名
-// agy / Trae 的 mcp_config.json 只认 serverUrl，不认 url
-const 分发目标 = [
-  { 文件: '.agents/mcp.json', 变体: 'url' },
-  { 文件: '.trae/mcp.json', 变体: 'url' },
-  { 文件: '.agents/mcp_config.json', 变体: 'serverUrl' },
-  { 文件: '.trae/mcp_config.json', 变体: 'serverUrl' },
+// Per-client project configs derived from .mcp.json; the variant picks the remote field name.
+// agy / Trae mcp_config.json only accept serverUrl, never url.
+const TARGETS = [
+  { file: '.agents/mcp.json', variant: 'url' },
+  { file: '.trae/mcp.json', variant: 'url' },
+  { file: '.agents/mcp_config.json', variant: 'serverUrl' },
+  { file: '.trae/mcp_config.json', variant: 'serverUrl' },
 ];
 
-// 只认全局配置的客户端（项目级配置对它们无效时用 --global 补一份）
-const 全局客户端 = [
+// Clients that only read a global config (a project-level config is ignored by them; --global
+// writes one copy).
+const GLOBAL_CLIENTS = [
   {
     id: 'workbuddy',
-    路径: join(homedir(), '.workbuddy', 'mcp.json'),
-    结构: 'mcpServers',
-    生效: '在 WorkBuddy 的 MCP 设置里点一次「信任」',
+    path: join(homedir(), '.workbuddy', 'mcp.json'),
+    shape: 'mcpServers',
+    hint: 'click "Trust" once in the WorkBuddy MCP settings',
   },
   {
     id: 'opencode',
-    路径: join(homedir(), '.config', 'opencode', 'opencode.json'),
-    结构: 'opencode',
-    生效: '新开一个 opencode 会话',
+    path: join(homedir(), '.config', 'opencode', 'opencode.json'),
+    shape: 'opencode',
+    hint: 'open a new opencode session',
   },
   {
     id: 'claude-code',
-    路径: join(homedir(), '.claude.json'),
-    结构: 'mcpServers',
-    生效: '下次启动 Claude Code 会话时读取',
+    path: join(homedir(), '.claude.json'),
+    shape: 'mcpServers',
+    hint: 'read on the next Claude Code session',
   },
   {
     id: 'agy',
-    路径: join(homedir(), '.gemini', 'config', 'mcp_config.json'),
-    结构: 'mcpServers',
-    生效: '在 agy 里执行 /mcp reload',
+    path: join(homedir(), '.gemini', 'config', 'mcp_config.json'),
+    shape: 'mcpServers',
+    hint: 'run /mcp reload in agy',
   },
   {
     id: 'trae',
-    路径: join(APPDATA, 'Trae CN', 'User', 'mcp.json'),
-    结构: 'mcpServers',
-    生效: '重启 Trae CN',
+    path: join(APPDATA, 'Trae CN', 'User', 'mcp.json'),
+    shape: 'mcpServers',
+    hint: 'restart Trae CN',
   },
 ];
 
-const 参数 = process.argv.slice(2);
-const 命令 = 参数.find((a) => !a.startsWith('-')) ?? 'doctor';
-const 开关 = new Set(参数.filter((a) => a.startsWith('-')));
-const 指定名 = 参数.find((a, i) => i > 0 && !a.startsWith('-') && a !== 命令);
+// `--root <dir>` takes a value, so it must be pulled out before positionals are scanned —
+// otherwise the directory would be read as the command name.
+const rawArgs = process.argv.slice(2);
+const rootIndex = rawArgs.indexOf('--root');
+const ROOT_FLAG = rootIndex >= 0 ? rawArgs[rootIndex + 1] : null;
+const argv = rootIndex >= 0 ? rawArgs.filter((_, index) => index !== rootIndex && index !== rootIndex + 1) : rawArgs;
 
-/** 项目根：--root 优先，否则从当前目录向上找 .mcp.json */
-function 定位根目录() {
-  const 序号 = 参数.indexOf('--root');
-  if (序号 >= 0 && 参数[序号 + 1]) return resolve(参数[序号 + 1]);
-  let 当前 = process.cwd();
-  for (let 层 = 0; 层 < 6; 层 += 1) {
-    if (existsSync(join(当前, '.mcp.json'))) return 当前;
-    const 上级 = dirname(当前);
-    if (上级 === 当前) break;
-    当前 = 上级;
+const command = argv.find((arg) => !arg.startsWith('-')) ?? 'doctor';
+const flags = new Set(argv.filter((arg) => arg.startsWith('-')));
+const nameFilter = argv.find((arg, index) => index > 0 && !arg.startsWith('-') && arg !== command);
+
+/** Project root: --root wins, otherwise walk up from the current directory looking for .mcp.json */
+function findRoot() {
+  if (ROOT_FLAG) return resolve(ROOT_FLAG);
+  let current = process.cwd();
+  for (let level = 0; level < 6; level += 1) {
+    if (existsSync(join(current, '.mcp.json'))) return current;
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
   }
   return process.cwd();
 }
 
-const 根目录 = 定位根目录();
-const 声明文件 = join(根目录, '.mcp.json');
+const ROOT = findRoot();
+const MANIFEST_FILE = join(ROOT, '.mcp.json');
 
-// ---------- 基础工具 ----------
+// ---------- primitives ----------
 
-function 读JSON(路径) {
-  return JSON.parse(readFileSync(路径, 'utf8'));
+function readJson(path) {
+  return JSON.parse(readFileSync(path, 'utf8'));
 }
 
-/** 项目本地配方（可选）：scripts/mcp/recipes.local.json，同名条目覆盖内置表 */
-let 本地配方缓存;
-function 本地配方表() {
-  if (本地配方缓存 !== undefined) return 本地配方缓存;
-  const 路径 = join(根目录, 'scripts', 'mcp', 'recipes.local.json');
-  if (!existsSync(路径)) {
-    本地配方缓存 = {};
-    return 本地配方缓存;
+/** Optional project-local recipes: scripts/mcp/recipes.local.json, overrides by name */
+let localRecipeCache;
+function localRecipes() {
+  if (localRecipeCache !== undefined) return localRecipeCache;
+  const path = join(ROOT, 'scripts', 'mcp', 'recipes.local.json');
+  if (!existsSync(path)) {
+    localRecipeCache = {};
+    return localRecipeCache;
   }
   try {
-    本地配方缓存 = 读JSON(路径);
-  } catch (错误) {
-    console.error(`[mcp] 本地配方解析失败，忽略: ${错误.message}`);
-    本地配方缓存 = {};
+    localRecipeCache = readJson(path);
+  } catch (error) {
+    console.error(`[mcp] cannot parse local recipes, ignoring: ${error.message}`);
+    localRecipeCache = {};
   }
-  return 本地配方缓存;
+  return localRecipeCache;
 }
 
-function 取配方(名) {
-  return 本地配方表()[名] ?? 配方[名];
+function recipeFor(name) {
+  return localRecipes()[name] ?? RECIPES[name];
 }
 
-/** 配方里的路径支持 `~`、`%VAR%`、`$VAR`，与项目其它配置写法保持一致 */
-function 展开路径(值) {
-  if (!值) return 值;
-  return 值
+/** Recipe paths accept `~`, `%VAR%` and `$VAR`, matching how the rest of the project is configured */
+function expandPath(value) {
+  if (!value) return value;
+  return value
     .replace(/^~/, homedir())
-    .replace(/%([^%]+)%/g, (原, 名) => process.env[名] ?? 原)
-    .replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (原, 名) => process.env[名] ?? 原);
+    .replace(/%([^%]+)%/g, (raw, name) => process.env[name] ?? raw)
+    .replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (raw, name) => process.env[name] ?? raw);
 }
 
-function 写JSON(路径, 值) {
-  mkdirSync(dirname(路径), { recursive: true });
-  writeFileSync(路径, `${JSON.stringify(值, null, 2)}\n`, 'utf8');
+function writeJson(path, value) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
-/** 与源文件逐字节比较，避免无意义改写（含键序） */
-function 渲染(声明, 变体) {
-  const 结果 = JSON.parse(JSON.stringify(声明));
-  if (变体 === 'serverUrl') {
-    for (const 项 of Object.values(结果.mcpServers ?? {})) {
-      if (项.url !== undefined) {
-        项.serverUrl = 项.url;
-        delete 项.url;
+/** Byte-for-byte comparison with the intended output, so key order churn never rewrites a file */
+function renderConfig(manifest, variant) {
+  const result = JSON.parse(JSON.stringify(manifest));
+  if (variant === 'serverUrl') {
+    for (const item of Object.values(result.mcpServers ?? {})) {
+      if (item.url !== undefined) {
+        item.serverUrl = item.url;
+        delete item.url;
       }
     }
   }
-  return `${JSON.stringify(结果, null, 2)}\n`;
+  return `${JSON.stringify(result, null, 2)}\n`;
 }
 
-/** 本项目是否声明了 MCP；没有声明视为「不需要项目级 MCP」，不是错误 */
-function 有声明() {
-  return existsSync(声明文件);
+/** A project without .mcp.json simply declares no project-level MCP — not an error */
+function hasManifest() {
+  return existsSync(MANIFEST_FILE);
 }
 
-function 读声明() {
-  if (!有声明()) return { mcpServers: {} };
-  return 读JSON(声明文件);
+function readManifest() {
+  if (!hasManifest()) return { mcpServers: {} };
+  return readJson(MANIFEST_FILE);
 }
 
-function 未声明提示() {
+function noticeNoManifest() {
   console.log(
-    '[mcp] 本项目未声明 .mcp.json，暂无项目级 MCP（如需启用：创建 {"mcpServers": {}} 后按需加条目）',
+    '[mcp] no .mcp.json in this project, so there is no project-level MCP (to enable: create {"mcpServers": {}} and add entries)',
   );
 }
 
-/** PATH（含 uv 的 shim 目录）里解析可执行文件；Windows 上 .exe 优先于无扩展名脚本 */
-function 解析命令(名) {
-  if (!名) return null;
-  if (/[\\/]/.test(名)) return existsSync(名) ? 名 : null;
+/** Resolve an executable on PATH (including the uv shim dir); on Windows .exe beats an extensionless script */
+function resolveCommand(name) {
+  if (!name) return null;
+  if (/[\\/]/.test(name)) return existsSync(name) ? name : null;
 
-  const 目录表 = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
-  目录表.push(join(homedir(), '.local', 'bin'));
-  const uvShim = uv工具目录();
-  if (uvShim) 目录表.push(uvShim);
+  const dirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
+  dirs.push(join(homedir(), '.local', 'bin'));
+  const uvShim = uvBinDir();
+  if (uvShim) dirs.push(uvShim);
 
-  const 扩展名表 = process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
-  for (const 目录 of 目录表) {
-    for (const 扩展名 of 扩展名表) {
-      const 候选 = join(目录, `${名}${扩展名}`);
-      if (existsSync(候选)) return 候选;
+  const extensions = process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
+  for (const dir of dirs) {
+    for (const extension of extensions) {
+      const candidate = join(dir, `${name}${extension}`);
+      if (existsSync(candidate)) return candidate;
     }
   }
   return null;
 }
 
-let uv目录缓存;
-function uv工具目录() {
-  if (uv目录缓存 !== undefined) return uv目录缓存;
-  const r = spawnSync('uv', ['tool', 'dir', '--bin'], { encoding: 'utf8' });
-  uv目录缓存 = r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
-  return uv目录缓存;
+let uvBinDirCache;
+function uvBinDir() {
+  if (uvBinDirCache !== undefined) return uvBinDirCache;
+  const result = spawnSync('uv', ['tool', 'dir', '--bin'], { encoding: 'utf8' });
+  uvBinDirCache = result.status === 0 && result.stdout.trim() ? result.stdout.trim() : null;
+  return uvBinDirCache;
 }
 
-function uv已装(入口) {
-  const r = spawnSync('uv', ['tool', 'list'], { encoding: 'utf8' });
-  if (r.status !== 0) return false;
-  return r.stdout
+function uvInstalled(entry) {
+  const result = spawnSync('uv', ['tool', 'list'], { encoding: 'utf8' });
+  if (result.status !== 0) return false;
+  return result.stdout
     .split(/\r?\n/)
-    .map((行) => 行.replace(/^[-\s]+/, '').split(/\s+/)[0])
+    .map((line) => line.replace(/^[-\s]+/, '').split(/\s+/)[0])
     .filter(Boolean)
-    .includes(入口);
+    .includes(entry);
 }
 
-/** .cmd/.bat 必须经 cmd.exe 启动，POSIX 直接执行 */
-function 启动参数(命令路径, 参数列表) {
-  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(命令路径)) {
+/** Normalize a git source from a recipe: drop the `git+` prefix and any `#ref` fragment */
+function normalizeSource(source) {
+  return source ? source.replace(/^git\+/, '').split('#')[0] : null;
+}
+
+/** Read uv's install receipt and return the git source it was installed from; null when unknown */
+function installedSource(entry) {
+  const dir = spawnSync('uv', ['tool', 'dir'], { encoding: 'utf8' }).stdout?.trim();
+  if (!dir) return null;
+  const receipt = join(dir, entry, 'uv-receipt.toml');
+  if (!existsSync(receipt)) return null;
+  const hit = readFileSync(receipt, 'utf8').match(/git\s*=\s*"([^"]+)"/);
+  return hit ? normalizeSource(hit[1]) : null;
+}
+
+/** .cmd/.bat must be launched through cmd.exe; POSIX runs them directly */
+function spawnArgs(commandPath, args) {
+  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(commandPath)) {
     return {
-      命令: process.env.ComSpec ?? 'cmd.exe',
-      参数: ['/d', '/s', '/c', 命令路径, ...参数列表],
+      executable: process.env.ComSpec ?? 'cmd.exe',
+      args: ['/d', '/s', '/c', commandPath, ...args],
       shell: false,
     };
   }
-  return { 命令: 命令路径, 参数: 参数列表, shell: false };
+  return { executable: commandPath, args, shell: false };
 }
 
-// ---------- 同步：.mcp.json → 其余四份 ----------
+// ---------- sync: .mcp.json -> the other four ----------
 
-function 同步计划(声明) {
-  return 分发目标.flatMap((目标) => {
-    const 绝对 = join(根目录, 目标.文件);
-    // 项目里根本没有这个客户端目录时跳过，避免凭空造出 .trae/ 之类
-    if (!existsSync(绝对) && !existsSync(dirname(绝对))) return [];
-    const 期望 = 渲染(声明, 目标.变体);
-    const 实际 = existsSync(绝对) ? readFileSync(绝对, 'utf8') : null;
-    return [{ ...目标, 期望, 有差异: 实际 !== 期望 }];
+function syncPlan(manifest) {
+  return TARGETS.flatMap((target) => {
+    const absolute = join(ROOT, target.file);
+    // Skip when the client directory does not exist at all, so we never invent a .trae/ folder
+    if (!existsSync(absolute) && !existsSync(dirname(absolute))) return [];
+    const expected = renderConfig(manifest, target.variant);
+    const actual = existsSync(absolute) ? readFileSync(absolute, 'utf8') : null;
+    return [{ ...target, expected, drifted: actual !== expected }];
   });
 }
 
-function 执行同步(声明, 落盘) {
-  if (!有声明()) {
-    未声明提示();
+function runSync(manifest, write) {
+  if (!hasManifest()) {
+    noticeNoManifest();
     return 0;
   }
-  let 变更数 = 0;
-  const 计划 = 同步计划(声明);
-  for (const 项 of 计划) {
-    if (!项.有差异) continue;
-    变更数 += 1;
-    if (落盘) {
-      写JSON(join(根目录, 项.文件), JSON.parse(项.期望));
-      console.log(`[mcp] 已同步 ${项.文件}（变体 ${项.变体}）`);
+  let changes = 0;
+  const plan = syncPlan(manifest);
+  for (const item of plan) {
+    if (!item.drifted) continue;
+    changes += 1;
+    if (write) {
+      writeJson(join(ROOT, item.file), JSON.parse(item.expected));
+      console.log(`[mcp] synced ${item.file} (variant ${item.variant})`);
     } else {
-      console.log(`[mcp] 待同步 ${项.文件}（变体 ${项.变体}）`);
+      console.log(`[mcp] pending ${item.file} (variant ${item.variant})`);
     }
   }
-  if (计划.length === 0) console.log('[mcp] 没有可同步的派生配置（项目缺少对应客户端目录）');
-  else if (变更数 === 0) console.log(`[mcp] ${计划.length} 份派生配置均与 .mcp.json 一致`);
-  else if (!落盘) console.log('[mcp] 加 --write 落盘');
-  return 变更数;
+  if (plan.length === 0) console.log('[mcp] no derived configs to sync (client directories missing)');
+  else if (changes === 0) console.log(`[mcp] all ${plan.length} derived configs match .mcp.json`);
+  else if (!write) console.log('[mcp] add --write to apply');
+  return changes;
 }
 
-// ---------- 握手：真实 stdio JSON-RPC ----------
+// ---------- handshake: a real stdio JSON-RPC round trip ----------
 
-function 握手(命令路径, 参数列表, 超时毫秒 = 8000) {
-  return new Promise((完成) => {
-    const 起点 = Date.now();
-    const { 命令: 可执行, 参数: 实参 } = 启动参数(命令路径, 参数列表);
-    let 子进程;
+// The timeout is generous at 20s: a freshly installed uv tool has to build its bytecode cache on
+// the first cold start, and Windows antivirus scans the new exe — measured 8s+ the first time and
+// under 1.5s the second, so an 8s cut-off reports false "handshake timeout" failures.
+function handshake(commandPath, args, timeoutMs = 20000) {
+  return new Promise((done) => {
+    const startedAt = Date.now();
+    const { executable, args: spawnArgv } = spawnArgs(commandPath, args);
+    let child;
     try {
-      子进程 = spawn(可执行, 实参, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
-    } catch (错误) {
-      return 完成({ 成功: false, 错误: 错误.message, 耗时: 0 });
+      child = spawn(executable, spawnArgv, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    } catch (error) {
+      return done({ ok: false, error: error.message, elapsed: 0 });
     }
 
-    let 缓冲 = '';
-    let stderr尾巴 = [];
-    let 已完成 = false;
-    let 服务端名 = '?';
-    let 服务端版本 = '';
-    let 定时器;
+    let buffer = '';
+    let stderrTail = [];
+    let settled = false;
+    let serverName = '?';
+    let serverVersion = '';
+    let timer;
 
-    const 收尾 = (结果) => {
-      if (已完成) return;
-      已完成 = true;
-      if (定时器) clearTimeout(定时器);
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
       try {
-        子进程.kill();
+        child.kill();
       } catch {
-        /* 已退出 */
+        /* already exited */
       }
-      完成({ ...结果, 耗时: Date.now() - 起点 });
+      done({ ...result, elapsed: Date.now() - startedAt });
     };
 
-    const 发送 = (负载) => {
+    const send = (payload) => {
       try {
-        子进程.stdin.write(`${JSON.stringify(负载)}\n`);
+        child.stdin.write(`${JSON.stringify(payload)}\n`);
       } catch {
-        /* 进程已退出，交给 exit 收尾 */
+        /* the process is gone; the exit handler settles this */
       }
     };
 
-    定时器 = setTimeout(
-      () => 收尾({ 成功: false, 错误: `握手超时（${超时毫秒}ms）` }),
-      超时毫秒,
+    timer = setTimeout(
+      () => finish({ ok: false, error: `handshake timeout (${timeoutMs}ms)` }),
+      timeoutMs,
     );
 
-    子进程.stdin.on('error', () => {
-      /* EPIPE：进程提前退出，由 exit 事件兜底 */
+    child.stdin.on('error', () => {
+      /* EPIPE: the process exited early, the exit event handles it */
     });
-    子进程.stderr.on('data', (块) => {
-      stderr尾巴.push(...块.toString().split(/\r?\n/).filter(Boolean));
-      if (stderr尾巴.length > 20) stderr尾巴 = stderr尾巴.slice(-20);
+    child.stderr.on('data', (chunk) => {
+      stderrTail.push(...chunk.toString().split(/\r?\n/).filter(Boolean));
+      if (stderrTail.length > 20) stderrTail = stderrTail.slice(-20);
     });
-    子进程.on('error', (错误) => 收尾({ 成功: false, 错误: `无法启动进程: ${错误.message}` }));
-    子进程.on('exit', () => {
-      if (已完成) return;
-      const 尾巴 = stderr尾巴.length > 0 ? `（stderr: ${stderr尾巴.slice(-3).join(' | ')}）` : '';
-      收尾({ 成功: false, 错误: `子进程提前退出，未产生应答${尾巴}` });
+    child.on('error', (error) => finish({ ok: false, error: `cannot start process: ${error.message}` }));
+    child.on('exit', () => {
+      if (settled) return;
+      const tail = stderrTail.length > 0 ? ` (stderr: ${stderrTail.slice(-3).join(' | ')})` : '';
+      finish({ ok: false, error: `process exited before answering${tail}` });
     });
 
-    发送({
+    send({
       jsonrpc: '2.0',
       id: 1,
       method: 'initialize',
@@ -344,38 +377,38 @@ function 握手(命令路径, 参数列表, 超时毫秒 = 8000) {
       },
     });
 
-    // 非 JSON 行（启动横幅、日志）直接跳过
-    子进程.stdout.on('data', (块) => {
-      缓冲 += 块.toString();
-      let 换行;
-      while ((换行 = 缓冲.indexOf('\n')) >= 0) {
-        const 行 = 缓冲.slice(0, 换行).trim();
-        缓冲 = 缓冲.slice(换行 + 1);
-        if (!行) continue;
-        let 消息;
+    // Non-JSON lines (startup banners, logs) are skipped
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk.toString();
+      let newline;
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (!line) continue;
+        let message;
         try {
-          消息 = JSON.parse(行);
+          message = JSON.parse(line);
         } catch {
           continue;
         }
-        if (消息.id === 1) {
-          if (消息.error) {
-            收尾({ 成功: false, 错误: `服务端返回错误: ${JSON.stringify(消息.error)}` });
+        if (message.id === 1) {
+          if (message.error) {
+            finish({ ok: false, error: `server returned an error: ${JSON.stringify(message.error)}` });
             return;
           }
-          服务端名 = 消息.result?.serverInfo?.name ?? '?';
-          服务端版本 = 消息.result?.serverInfo?.version ?? '';
-          发送({ jsonrpc: '2.0', method: 'notifications/initialized' });
-          发送({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+          serverName = message.result?.serverInfo?.name ?? '?';
+          serverVersion = message.result?.serverInfo?.version ?? '';
+          send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+          send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
           continue;
         }
-        if (消息.id === 2) {
-          if (消息.error) {
-            收尾({ 成功: false, 错误: `tools/list 失败: ${JSON.stringify(消息.error)}` });
+        if (message.id === 2) {
+          if (message.error) {
+            finish({ ok: false, error: `tools/list failed: ${JSON.stringify(message.error)}` });
             return;
           }
-          const 工具数 = Array.isArray(消息.result?.tools) ? 消息.result.tools.length : 0;
-          收尾({ 成功: true, 名称: 服务端名, 版本: 服务端版本, 工具数 });
+          const toolCount = Array.isArray(message.result?.tools) ? message.result.tools.length : 0;
+          finish({ ok: true, name: serverName, version: serverVersion, toolCount });
           return;
         }
       }
@@ -385,254 +418,275 @@ function 握手(命令路径, 参数列表, 超时毫秒 = 8000) {
 
 // ---------- doctor ----------
 
-function 检查扩展(名) {
-  const 项 = 取配方(名);
-  if (!项?.扩展) return null;
-  const 缺失 = !existsSync(展开路径(项.扩展.到));
-  const 配置文件 = 项.启用 ? 展开路径(项.启用.文件) : null;
-  const 配置 = 配置文件 && existsSync(配置文件)
-    ? (读JSON(配置文件)[项.启用.键] ?? []).includes(项.启用.值)
-    : null;
-  return { 缺失, 配置 };
+function inspectExtension(name) {
+  const recipe = recipeFor(name);
+  if (!recipe?.extension) return null;
+  const missing = !existsSync(expandPath(recipe.extension.to));
+  const configFile = recipe.enable ? expandPath(recipe.enable.file) : null;
+  const configured =
+    configFile && existsSync(configFile)
+      ? (readJson(configFile)[recipe.enable.key] ?? []).includes(recipe.enable.value)
+      : null;
+  return { missing, configured };
 }
 
-async function 体检() {
-  if (!有声明()) {
-    未声明提示();
+async function doctor() {
+  if (!hasManifest()) {
+    noticeNoManifest();
     return 0;
   }
-  const 声明 = 读声明();
-  const 服务列表 = Object.entries(声明.mcpServers ?? {});
-  const 问题 = [];
+  const manifest = readManifest();
+  const servers = Object.entries(manifest.mcpServers ?? {});
+  const problems = [];
 
-  const 漂移 = 同步计划(声明).filter((项) => 项.有差异);
-  for (const 项 of 漂移) {
-    问题.push(`${项.文件} 与 .mcp.json 不一致`);
+  for (const item of syncPlan(manifest).filter((entry) => entry.drifted)) {
+    problems.push(`${item.file} does not match .mcp.json`);
   }
 
-  console.log(`[mcp] 声明 ${服务列表.length} 个服务器（.mcp.json）`);
-  const 已握手 = new Map();
-  for (const [名, 定义] of 服务列表) {
-    if (定义.url) {
-      console.log(`  [远程] ${名} → ${定义.url}`);
+  console.log(`[mcp] ${servers.length} server(s) declared in .mcp.json`);
+  const handshaken = new Map();
+  for (const [name, definition] of servers) {
+    if (definition.url) {
+      console.log(`  [remote] ${name} -> ${definition.url}`);
       continue;
     }
-    const 路径 = 解析命令(定义.command);
-    if (!路径) {
-      console.log(`  [缺失] ${名} → ${定义.command}（PATH 中找不到）`);
-      问题.push(`${名} 的命令不可用: ${定义.command}`);
+    const commandPath = resolveCommand(definition.command);
+    if (!commandPath) {
+      console.log(`  [missing] ${name} -> ${definition.command} (not found on PATH)`);
+      problems.push(`${name}: command unavailable: ${definition.command}`);
       continue;
     }
-    if (开关.has('--static') || 已握手.has(路径)) {
-      console.log(`  [正常] ${名} → ${路径}`);
+    if (flags.has('--static') || handshaken.has(commandPath)) {
+      console.log(`  [ok] ${name} -> ${commandPath}`);
       continue;
     }
-    const 结果 = await 握手(路径, 定义.args ?? []);
-    已握手.set(路径, 结果);
-    if (结果.成功) {
+    const result = await handshake(commandPath, definition.args ?? []);
+    handshaken.set(commandPath, result);
+    if (result.ok) {
       console.log(
-        `  [正常] ${名} → ${结果.名称} ${结果.版本} · ${结果.工具数} 个工具 · ${结果.耗时}ms`,
+        `  [ok] ${name} -> ${result.name} ${result.version} · ${result.toolCount} tools · ${result.elapsed}ms`,
       );
     } else {
-      console.log(`  [失败] ${名} → ${结果.错误}`);
-      问题.push(`${名} 握手失败: ${结果.错误}`);
+      console.log(`  [fail] ${name} -> ${result.error}`);
+      problems.push(`${name}: handshake failed: ${result.error}`);
     }
   }
 
-  // 附属产物：扩展没装，服务能连上但拿不到数据
-  for (const [名] of 服务列表) {
-    const 检查 = 检查扩展(名);
-    if (!检查) continue;
-    if (检查.缺失) {
-      console.log(`  [待装] ${名} 的附属产物（扩展）未就位`);
-      问题.push(`${名} 的扩展未安装，先跑 install`);
-    } else if (检查.配置 === false) {
-      console.log(`  [待装] ${名} 的扩展已拷贝，但宿主程序未启用（AlwaysLoad_Extensions）`);
-      问题.push(`${名} 的扩展未被宿主程序加载，跑 install 或手动启用`);
+  // Side artifacts: without the extension the server answers but has no data
+  for (const [name] of servers) {
+    const check = inspectExtension(name);
+    if (!check) continue;
+    if (check.missing) {
+      console.log(`  [pending] ${name}: extension not in place`);
+      problems.push(`${name}: extension not installed, run install`);
+    } else if (check.configured === false) {
+      console.log(`  [pending] ${name}: extension copied, but the host has not enabled it (AlwaysLoad_Extensions)`);
+      problems.push(`${name}: extension not loaded by the host, run install or enable it manually`);
     } else {
-      console.log(`  [正常] ${名} 的扩展已就位${检查.配置 ? '，宿主程序已启用' : ''}`);
+      console.log(`  [ok] ${name}: extension in place${check.configured ? ', host enabled it' : ''}`);
     }
   }
 
-  if (问题.length === 0) {
-    console.log('[mcp] 全部就绪');
+  if (problems.length === 0) {
+    console.log('[mcp] everything is ready');
     return 0;
   }
-  console.log(`[mcp] ${问题.length} 个问题：`);
-  for (const 项 of 问题) console.log(`  - ${项}`);
+  console.log(`[mcp] ${problems.length} problem(s):`);
+  for (const item of problems) console.log(`  - ${item}`);
   return 1;
 }
 
 // ---------- install ----------
 
-function 确保源码(名, 项) {
-  const 缓存 = join(源码缓存, 名.replace(/-mcp$/, ''));
-  if (existsSync(join(缓存, 项.扩展.从))) return 缓存;
+function ensureSource(name, recipe) {
+  const cache = join(SOURCE_CACHE, name.replace(/-mcp$/, ''));
+  const from = recipe.extension?.from;
 
-  const 源 = 项.源?.replace(/^git\+/, '').split('#')[0];
-  if (!源) {
-    console.log(`[mcp] ${名}: 缺少源码且没有 git 源，跳过扩展`);
+  const source = recipe.source?.replace(/^git\+/, '').split('#')[0];
+  if (!source) {
+    console.log(`[mcp] ${name}: no source and no git repo, skipping the extension`);
     return null;
   }
-  console.log(`[mcp] 克隆源码 → ${缓存}`);
-  mkdirSync(dirname(缓存), { recursive: true });
-  const r = spawnSync('git', ['clone', '--depth', '1', 源, 缓存], { stdio: 'inherit' });
-  if (r.status !== 0) {
-    console.error(`[mcp] ${名}: 源码克隆失败`);
+
+  if (from && existsSync(join(cache, from))) {
+    // A changed source (upstream -> own fork) must not reuse the old clone, or the installed
+    // extension stays stale
+    const current = spawnSync('git', ['-C', cache, 'remote', 'get-url', 'origin'], { encoding: 'utf8' });
+    const currentSource = (current.stdout ?? '').trim();
+    if (currentSource === source) return cache;
+    console.log(`[mcp] ${name}: source cache points at ${currentSource || 'unknown'}, not the recipe, re-cloning`);
+    rmSync(cache, { recursive: true, force: true });
+  }
+
+  console.log(`[mcp] cloning source -> ${cache}`);
+  mkdirSync(dirname(cache), { recursive: true });
+  const result = spawnSync('git', ['clone', '--depth', '1', source, cache], { stdio: 'inherit' });
+  if (result.status !== 0) {
+    console.error(`[mcp] ${name}: source clone failed`);
     return null;
   }
-  return 缓存;
+  return cache;
 }
 
-function 写全局(名, 命令路径) {
-  for (const 客户端 of 全局客户端) {
-    const 原文本 = existsSync(客户端.路径) ? readFileSync(客户端.路径, 'utf8') : null;
-    const 文档 = 原文本 ? JSON.parse(原文本) : {};
-    if (客户端.结构 === 'opencode') {
-      文档.mcp ??= {};
-      文档.mcp.servers ??= {};
-      文档.mcp.servers[名] = { type: 'local', command: [命令路径], enabled: true };
+function writeGlobal(name, commandPath) {
+  for (const client of GLOBAL_CLIENTS) {
+    const before = existsSync(client.path) ? readFileSync(client.path, 'utf8') : null;
+    const document = before ? JSON.parse(before) : {};
+    if (client.shape === 'opencode') {
+      document.mcp ??= {};
+      document.mcp.servers ??= {};
+      document.mcp.servers[name] = { type: 'local', command: [commandPath], enabled: true };
     } else {
-      文档.mcpServers ??= {};
-      文档.mcpServers[名] = { command: 命令路径, args: [] };
+      document.mcpServers ??= {};
+      document.mcpServers[name] = { command: commandPath, args: [] };
     }
-    const 新文本 = `${JSON.stringify(文档, null, 2)}\n`;
-    if (新文本 === 原文本) {
-      console.log(`  [全局] ${客户端.id} 已是最新（${客户端.路径}）`);
+    const after = `${JSON.stringify(document, null, 2)}\n`;
+    if (after === before) {
+      console.log(`  [global] ${client.id} already up to date (${client.path})`);
       continue;
     }
-    if (原文本 !== null) {
-      const 备份 = `${客户端.路径}.pengj-mcp.bak`;
-      if (!existsSync(备份)) cpSync(客户端.路径, 备份);
+    if (before !== null) {
+      const backup = `${client.path}.pengj-mcp.bak`;
+      if (!existsSync(backup)) cpSync(client.path, backup);
     }
-    写JSON(客户端.路径, 文档);
-    console.log(`  [全局] ${客户端.id} → ${客户端.路径}（${客户端.生效}）`);
+    writeJson(client.path, document);
+    console.log(`  [global] ${client.id} -> ${client.path} (${client.hint})`);
   }
 }
 
-function 安装(目标名) {
-  if (!有声明()) {
-    未声明提示();
+function install(targetName) {
+  if (!hasManifest()) {
+    noticeNoManifest();
     return 0;
   }
-  const 声明 = 读声明();
-  const 服务列表 = Object.entries(声明.mcpServers ?? {}).filter(
-    ([名]) => !目标名 || 名 === 目标名,
+  const manifest = readManifest();
+  const servers = Object.entries(manifest.mcpServers ?? {}).filter(
+    ([name]) => !targetName || name === targetName,
   );
-  if (服务列表.length === 0) {
-    console.error(`[mcp] 没有匹配的服务器: ${目标名}`);
+  if (servers.length === 0) {
+    console.error(`[mcp] no matching server: ${targetName}`);
     return 1;
   }
 
-  let 失败 = 0;
-  for (const [名, 定义] of 服务列表) {
-    const 项 = 取配方(名);
-    if (!项) {
-      console.log(`[mcp] ${名}: 无安装配方，跳过（按需手动安装）`);
+  let failures = 0;
+  for (const [name, definition] of servers) {
+    const recipe = recipeFor(name);
+    if (!recipe) {
+      console.log(`[mcp] ${name}: no install recipe, skipping (install it manually if needed)`);
       continue;
     }
-    if (项.类型 === 'none') {
-      console.log(`[mcp] ${名}: ${项.提示 ?? '无需安装'}`);
+    if (recipe.type === 'none') {
+      console.log(`[mcp] ${name}: ${recipe.hint ?? 'no install needed'}`);
       continue;
     }
 
-    // 1) 主体
-    if (项.类型 === 'uv-git') {
-      if (uv已装(项.入口)) {
-        console.log(`[mcp] ${名}: 主体已存在（uv tool）`);
+    // 1) the server itself
+    if (recipe.type === 'uv-git') {
+      // A changed source (upstream -> own fork) must be reinstalled, or the tool keeps old code
+      const expectedSource = normalizeSource(recipe.source);
+      const currentSource = installedSource(recipe.entry);
+      const sourceMismatch = Boolean(expectedSource && currentSource && currentSource !== expectedSource);
+      if (uvInstalled(recipe.entry) && !sourceMismatch) {
+        console.log(`[mcp] ${name}: server already installed (uv tool)`);
       } else {
-        console.log(`[mcp] ${名}: 安装主体（uv tool install）...`);
-        const r = spawnSync(
+        if (sourceMismatch) {
+          console.log(`[mcp] ${name}: installed from ${currentSource}, not the recipe, reinstalling...`);
+        } else {
+          console.log(`[mcp] ${name}: installing the server (uv tool install)...`);
+        }
+        const result = spawnSync(
           'uv',
-          ['tool', 'install', '--force', '--from', 项.源, 项.入口],
+          ['tool', 'install', '--force', '--from', recipe.source, recipe.entry],
           { stdio: 'inherit' },
         );
-        if (r.status !== 0) {
-          console.error(`[mcp] ${名}: 主体安装失败`);
-          失败 += 1;
+        if (result.status !== 0) {
+          console.error(`[mcp] ${name}: server install failed`);
+          failures += 1;
           continue;
         }
       }
     }
 
-    // 2) 附属产物
-    if (项.扩展) {
-      const 缓存 = 确保源码(名, 项);
-      const 源目录 = 缓存 && join(缓存, 项.扩展.从);
-      const 目标 = 展开路径(项.扩展.到);
-      if (源目录 && existsSync(源目录)) {
-        if (existsSync(目标)) rmSync(目标, { recursive: true, force: true });
-        cpSync(源目录, 目标, {
+    // 2) side artifact
+    if (recipe.extension) {
+      const cache = ensureSource(name, recipe);
+      const fromDir = cache && join(cache, recipe.extension.from);
+      const toDir = expandPath(recipe.extension.to);
+      if (fromDir && existsSync(fromDir)) {
+        if (existsSync(toDir)) rmSync(toDir, { recursive: true, force: true });
+        mkdirSync(dirname(toDir), { recursive: true });
+        cpSync(fromDir, toDir, {
           recursive: true,
-          filter: (从) => !从.includes('__pycache__') && !从.endsWith('.pyc'),
+          filter: (path) => !path.includes('__pycache__') && !path.endsWith('.pyc'),
         });
-        console.log(`[mcp] ${名}: 扩展 → ${目标}`);
+        console.log(`[mcp] ${name}: extension -> ${toDir}`);
       }
     }
 
-    // 3) 宿主程序启用
-    const 启用文件 = 项.启用 ? 展开路径(项.启用.文件) : null;
-    if (项.启用 && existsSync(启用文件)) {
-      if (宿主在运行(项.要求)) {
-        console.log(`[mcp] ${名}: ${项.要求.join(',')} 正在运行，退出后会覆盖配置，跳过启用`);
+    // 3) let the host load it
+    const enableFile = recipe.enable ? expandPath(recipe.enable.file) : null;
+    if (recipe.enable && existsSync(enableFile)) {
+      if (hostRunning(recipe.requires)) {
+        console.log(`[mcp] ${name}: ${recipe.requires.join(',')} is running and would overwrite the config on exit, skipping enable`);
       } else {
-        const 配置 = 读JSON(启用文件);
-        const 表 = Array.isArray(配置[项.启用.键]) ? 配置[项.启用.键] : [];
-        if (!表.includes(项.启用.值)) {
-          表.push(项.启用.值);
-          配置[项.启用.键] = 表;
-          写JSON(启用文件, 配置);
-          console.log(`[mcp] ${名}: 已写入 ${项.启用.键} += ${项.启用.值}`);
+        const config = readJson(enableFile);
+        const entries = Array.isArray(config[recipe.enable.key]) ? config[recipe.enable.key] : [];
+        if (!entries.includes(recipe.enable.value)) {
+          entries.push(recipe.enable.value);
+          config[recipe.enable.key] = entries;
+          writeJson(enableFile, config);
+          console.log(`[mcp] ${name}: wrote ${recipe.enable.key} += ${recipe.enable.value}`);
         } else {
-          console.log(`[mcp] ${名}: 宿主程序已启用扩展`);
+          console.log(`[mcp] ${name}: host already loads the extension`);
         }
       }
     }
 
-    // 4) 全局配置（可选）
-    if (开关.has('--global')) {
-      const 路径 = 解析命令(定义.command);
-      if (!路径) {
-        console.error(`[mcp] ${名}: 命令仍不可用，无法写全局配置`);
-        失败 += 1;
+    // 4) optional global config
+    if (flags.has('--global')) {
+      const commandPath = resolveCommand(definition.command);
+      if (!commandPath) {
+        console.error(`[mcp] ${name}: command still unavailable, cannot write the global config`);
+        failures += 1;
       } else {
-        写全局(项.全局名 ?? 名, 路径);
+        writeGlobal(recipe.globalName ?? name, commandPath);
       }
     }
   }
-  return 失败 === 0 ? 0 : 1;
+  return failures === 0 ? 0 : 1;
 }
 
-function 宿主在运行(要求 = []) {
+function hostRunning(required = []) {
   if (process.platform !== 'win32') return false;
-  return 要求.some((名) => {
-    const r = spawnSync('tasklist', ['/FI', `IMAGENAME eq ${名}.exe`, '/NH'], {
+  return required.some((name) => {
+    const result = spawnSync('tasklist', ['/FI', `IMAGENAME eq ${name}.exe`, '/NH'], {
       encoding: 'utf8',
     });
-    return (r.stdout ?? '').toLowerCase().includes(`${名}.exe`.toLowerCase());
+    return (result.stdout ?? '').toLowerCase().includes(`${name}.exe`.toLowerCase());
   });
 }
 
-// ---------- 入口 ----------
+// ---------- entry ----------
 
-const 分发 = {
-  doctor: 体检,
-  install: 安装,
-  // 同步成功就是成功；变更条数不作为退出码（否则 shell 会误判为失败）
+const COMMANDS = {
+  doctor,
+  install,
+  // A successful sync is a success; the change count is not an exit code (a shell would read it
+  // as a failure)
   sync: () => {
-    执行同步(读声明(), 开关.has('--write'));
+    runSync(readManifest(), flags.has('--write'));
     return 0;
   },
 };
 
-if (!分发[命令]) {
-  console.error(`[mcp] 未知命令: ${命令}（可用: doctor / install / sync）`);
+if (!COMMANDS[command]) {
+  console.error(`[mcp] unknown command: ${command} (available: doctor / install / sync)`);
   process.exit(2);
 }
 
-Promise.resolve(分发[命令](指定名))
-  .then((码) => process.exit(Number(码) || 0))
-  .catch((错误) => {
-    console.error(`[mcp] 执行失败: ${错误.message}`);
+Promise.resolve(COMMANDS[command](nameFilter))
+  .then((code) => process.exit(Number(code) || 0))
+  .catch((error) => {
+    console.error(`[mcp] failed: ${error.message}`);
     process.exit(1);
   });
