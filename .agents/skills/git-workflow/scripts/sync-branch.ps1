@@ -150,22 +150,129 @@ function Assert-GitSuccess {
     }
 }
 
+function Get-RemoteNames {
+    $res = Invoke-Git @("remote")
+    $names = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    if ($res.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($res.Output))) {
+        foreach ($line in ($res.Output -split "`r?`n")) {
+            $t = $line.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($t)) { $names.Add($t) | Out-Null }
+        }
+    }
+    if ($names.Count -eq 0) { $names.Add("origin") | Out-Null }
+    return $names
+}
+
+function Test-ValidBranchName {
+    param(
+        [string]$BranchName,
+        [System.Collections.Generic.HashSet[string]]$RemoteNames = $null
+    )
+    if ([string]::IsNullOrWhiteSpace($BranchName)) { return $false }
+    $b = $BranchName.Trim()
+
+    # 1. 绝不能等于任何远程仓库名（如 origin, upstream）
+    if ($RemoteNames -and $RemoteNames.Contains($b)) { return $false }
+
+    # 2. 绝不能包含底层 ref 命名空间或递归前缀（heads/..., refs/..., remotes/...）
+    if ($b.StartsWith("heads/", [System.StringComparison]::OrdinalIgnoreCase) -or
+        $b.StartsWith("refs/", [System.StringComparison]::OrdinalIgnoreCase) -or
+        $b.StartsWith("remotes/", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+
+    # 3. 绝不能包含内部备份命名空间
+    if ($b.StartsWith("sync-backup/", [System.StringComparison]::OrdinalIgnoreCase) -or
+        $b.StartsWith("cleanup-backup/", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+
+    # 4. 绝不能包含套娃或递归路径片段（如包含 /heads/、/refs/、/remotes/）
+    if ($b -match "(?i)(?:^|/)(?:refs|heads|remotes)(?:/|$)") {
+        return $false
+    }
+
+    # 5. 绝不能以 remote/ 开头（如 origin/main，属于远程跟踪引用而非本地特性分支名）
+    if ($RemoteNames) {
+        foreach ($r in $RemoteNames) {
+            if ($b.StartsWith("$r/", [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $false
+            }
+        }
+    }
+
+    # 6. 特殊保留名
+    if ($b -eq "HEAD" -or $b.StartsWith("HEAD/", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+
+    # 7. Git check-ref-format 校验
+    $checkRes = Invoke-Git @("check-ref-format", "--branch", $b)
+    if ($checkRes.ExitCode -ne 0) {
+        return $false
+    }
+
+    return $true
+}
+
+function Get-CleanBranchName {
+    param(
+        [string]$RefOrBranch,
+        [System.Collections.Generic.HashSet[string]]$RemoteNames = $null
+    )
+    if ([string]::IsNullOrWhiteSpace($RefOrBranch)) { return "" }
+    $clean = $RefOrBranch.Trim()
+
+    # 逐层剥离前缀（防止意外传入 refs/heads/ 或 refs/remotes/）
+    while ($clean.StartsWith("refs/heads/", [System.StringComparison]::OrdinalIgnoreCase) -or
+           $clean.StartsWith("refs/remotes/", [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($clean.StartsWith("refs/heads/", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $clean = $clean.Substring(11).Trim()
+        } elseif ($clean.StartsWith("refs/remotes/", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $clean = $clean.Substring(13).Trim()
+        }
+    }
+
+    if ($RemoteNames) {
+        foreach ($r in $RemoteNames) {
+            if ($clean.StartsWith("$r/", [System.StringComparison]::OrdinalIgnoreCase)) {
+                $clean = $clean.Substring($r.Length + 1).Trim()
+            }
+        }
+    }
+
+    if (Test-ValidBranchName $clean $RemoteNames) {
+        return $clean
+    }
+    return ""
+}
+
 function Resolve-IntegrationBranch {
     param(
         [string]$ExplicitBranch,
         [string]$DeclaredBranch,
-        [bool]$HasRemote
+        [bool]$HasRemote,
+        [System.Collections.Generic.HashSet[string]]$RemoteNames = $null
     )
 
     if (-not [string]::IsNullOrWhiteSpace($ExplicitBranch)) {
-        return $ExplicitBranch.Trim().Replace("refs/heads/", "")
+        $cExplicit = Get-CleanBranchName $ExplicitBranch $RemoteNames
+        if (-not [string]::IsNullOrWhiteSpace($cExplicit)) {
+            return $cExplicit
+        }
+        throw "显式指定的集成分支名称非法或无效: '$ExplicitBranch'"
     }
 
-    $symRef = Invoke-Git @("symbolic-ref", "--short", "-q", "HEAD")
+    $symRef = Invoke-Git @("symbolic-ref", "-q", "HEAD")
     if ($symRef.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($symRef.Output))) {
-        $activeBranch = $symRef.Output.Trim()
-        Write-Host "💡 自动选定当前目录激活的分支作为集成分支: '$activeBranch'" -ForegroundColor Cyan
-        return $activeBranch
+        $trimmed = $symRef.Output.Trim()
+        if ($trimmed.StartsWith("refs/heads/")) {
+            $cand = Get-CleanBranchName ($trimmed.Substring(11)) $RemoteNames
+            if (-not [string]::IsNullOrWhiteSpace($cand)) {
+                Write-Host "💡 自动选定当前目录激活的分支作为集成分支: '$cand'" -ForegroundColor Cyan
+                return $cand
+            }
+        }
     }
 
     $currentPath = (Get-Location).Path
@@ -179,18 +286,27 @@ function Resolve-IntegrationBranch {
                 $wPath = $line.Substring(9).Trim()
                 try { $wPath = (Resolve-Path $wPath).Path } catch {}
             } elseif ($line.StartsWith("branch refs/heads/")) {
-                $bName = $line.Substring(18).Trim()
-                if ($wPath -eq $currentPath -and (-not [string]::IsNullOrWhiteSpace($bName))) {
-                    Write-Host "💡 检测到当前 Worktree 对应的登记分支作为集成分支: '$bName'" -ForegroundColor Cyan
-                    return $bName
+                $cand = Get-CleanBranchName ($line.Substring(18)) $RemoteNames
+                if ($wPath -eq $currentPath -and (-not [string]::IsNullOrWhiteSpace($cand))) {
+                    Write-Host "💡 检测到当前 Worktree 对应的登记分支作为集成分支: '$cand'" -ForegroundColor Cyan
+                    return $cand
                 }
             }
         }
     }
 
-    $pointsAt = Invoke-Git @("branch", "--points-at", "HEAD", "--format=%(refname:short)")
+    $pointsAt = Invoke-Git @("branch", "--points-at", "HEAD", "--format=%(refname)")
     if ($pointsAt.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($pointsAt.Output))) {
-        $candidates = @($pointsAt.Output -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $_.StartsWith("(") })
+        $candidates = [System.Collections.Generic.List[string]]::new()
+        foreach ($pLine in ($pointsAt.Output -split "`r?`n")) {
+            $pClean = $pLine.Trim()
+            if ($pClean.StartsWith("refs/heads/")) {
+                $c = Get-CleanBranchName ($pClean.Substring(11)) $RemoteNames
+                if (-not [string]::IsNullOrWhiteSpace($c) -and (-not $candidates.Contains($c))) {
+                    $candidates.Add($c)
+                }
+            }
+        }
         if ($candidates.Count -eq 1) {
             Write-Host "💡 检测到指向当前 HEAD 的唯一本地分支作为集成分支: '$($candidates[0])'" -ForegroundColor Cyan
             return $candidates[0]
@@ -198,17 +314,24 @@ function Resolve-IntegrationBranch {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($DeclaredBranch)) {
-        Write-Host "💡 根据 SKILL.md 登记选定集成分支: '$DeclaredBranch'" -ForegroundColor Cyan
-        return $DeclaredBranch
+        $cDeclared = Get-CleanBranchName $DeclaredBranch $RemoteNames
+        if (-not [string]::IsNullOrWhiteSpace($cDeclared)) {
+            Write-Host "💡 根据 SKILL.md 登记选定集成分支: '$cDeclared'" -ForegroundColor Cyan
+            return $cDeclared
+        }
     }
 
     if ($HasRemote) {
-        $rHead = Invoke-Git @("symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD")
+        $rHead = Invoke-Git @("symbolic-ref", "-q", "refs/remotes/origin/HEAD")
         if ($rHead.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($rHead.Output))) {
-            $rh = $rHead.Output.Trim()
-            if ($rh.StartsWith("origin/")) { $rh = $rh.Substring(7).Trim() }
-            Write-Host "💡 根据 origin/HEAD 选定集成分支: '$rh'" -ForegroundColor Cyan
-            return $rh
+            $trimmed = $rHead.Output.Trim()
+            if ($trimmed.StartsWith("refs/remotes/origin/")) {
+                $rh = Get-CleanBranchName ($trimmed.Substring("refs/remotes/origin/".Length)) $RemoteNames
+                if (-not [string]::IsNullOrWhiteSpace($rh)) {
+                    Write-Host "💡 根据 origin/HEAD 选定集成分支: '$rh'" -ForegroundColor Cyan
+                    return $rh
+                }
+            }
         }
         foreach ($b in @("main", "dev", "develop", "master", "trunk")) {
             if ((Invoke-Git @("rev-parse", "--verify", "origin/$b")).ExitCode -eq 0) {
@@ -227,7 +350,10 @@ function Resolve-IntegrationBranch {
 
     $dConf = Invoke-Git @("config", "init.defaultBranch")
     if ($dConf.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($dConf.Output))) {
-        return $dConf.Output.Trim()
+        $cDef = Get-CleanBranchName ($dConf.Output.Trim()) $RemoteNames
+        if (-not [string]::IsNullOrWhiteSpace($cDef)) {
+            return $cDef
+        }
     }
     return "main"
 }
@@ -305,6 +431,7 @@ function Get-DirtyItems {
 }
 
 function Get-RemoteTruthMap {
+    param([System.Collections.Generic.HashSet[string]]$RemoteNames = $null)
     # 远端真值发现：只信 git ls-remote（不受沙箱引用虚拟化影响，见 REFERENCE 一）。
     # 成功返回 hashtable（分支名 -> 远端 sha）；失败（无远端/离线）返回 $null，调用方回退旧枚举。
     # 永不抛异常。
@@ -322,9 +449,12 @@ function Get-RemoteTruthMap {
                     $sha = $parts[0].Trim()
                     $ref = $parts[1].Trim()
                     if ($ref.StartsWith("refs/heads/")) {
-                        $bName = $ref.Substring(11).Trim()
+                        $rawB = $ref.Substring(11).Trim()
+                        $bName = Get-CleanBranchName $rawB $RemoteNames
                         if ((-not [string]::IsNullOrWhiteSpace($bName)) -and (-not [string]::IsNullOrWhiteSpace($sha))) {
                             $map[$bName] = $sha
+                        } elseif (-not [string]::IsNullOrWhiteSpace($rawB)) {
+                            Write-Warning "⚠️ 远端存在畸形分支引用 '$ref'，已安全忽略，绝不在本地创建跟踪分支！"
                         }
                     }
                 }
@@ -408,6 +538,9 @@ function Test-ContentPreserved {
         $delCount = 0
         $delMatched = 0
         foreach ($ln in ($srcRes.Output -split "`r?`n")) {
+            if ($ln.StartsWith("diff --git") -or $ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
+                continue
+            }
             if ($ln.StartsWith("-")) {
                 $t = $ln.Substring(1).Trim()
                 if (-not [string]::IsNullOrWhiteSpace($t)) {
@@ -548,7 +681,8 @@ foreach ($p in $DirtyIgnorePattern) {
 }
 
 # 2. 推导集成分支
-$IntegrationBranch = Resolve-IntegrationBranch $IntegrationBranch $declaredIntegrationBranch $hasRemote
+$remoteNames = Get-RemoteNames
+$IntegrationBranch = Resolve-IntegrationBranch $IntegrationBranch $declaredIntegrationBranch $hasRemote $remoteNames
 $integCheck = Invoke-Git @("rev-parse", "--verify", $IntegrationBranch)
 if ($integCheck.ExitCode -ne 0) {
     throw "集成分支 '$IntegrationBranch' 不存在，请检查指定分支名称。"
@@ -583,7 +717,8 @@ if (-not $isAllBranchesMode) {
     # -----------------------------
     # 单分支同步模式 (Single Branch Mode)
     # -----------------------------
-    $SourceBranch = $SourceBranch.Trim().Replace("refs/heads/", "")
+    $SourceBranch = Get-CleanBranchName $SourceBranch $remoteNames
+    if ([string]::IsNullOrWhiteSpace($SourceBranch)) { throw "源分支 '$SourceBranch' 名称非法或包含非法路径字符。" }
     if ($SourceBranch -eq $IntegrationBranch) {
         throw "源分支 '$SourceBranch' 与集成分支 '$IntegrationBranch' 相同，无需自合并。"
     }
@@ -770,22 +905,53 @@ if (-not $isAllBranchesMode) {
     Write-Host "🌐 进入全分支同步模式 (目标集成分支: '$IntegrationBranch')..." -ForegroundColor Cyan
 
     # 扫描所有本地分支与远端真值分支（候选集 = 本地分支 UNION 远端真值）
-    $localBranches = (Invoke-Git @("for-each-ref", "--format=%(refname:short)", "refs/heads/")).Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    $remoteBranches = (Invoke-Git @("for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/")).Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $_.StartsWith("origin/HEAD") }
+    # 必须使用 %(refname) 精确匹配 refs/heads/，彻底杜绝 %(refname:short) 消歧前缀 (如 heads/origin)
+    $localBranchRefs = (Invoke-Git @("for-each-ref", "--format=%(refname)", "refs/heads/")).Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $localBranches = [System.Collections.Generic.List[string]]::new()
+    foreach ($lRef in $localBranchRefs) {
+        if ($lRef.StartsWith("refs/heads/")) {
+            $rawB = $lRef.Substring(11).Trim()
+            $cleanB = Get-CleanBranchName $rawB $remoteNames
+            if (-not [string]::IsNullOrWhiteSpace($cleanB)) {
+                $localBranches.Add($cleanB)
+            } else {
+                Write-Warning "⚠️ 发现畸形本地分支引用 '$lRef'，已安全忽略！建议运行清理。"
+            }
+        }
+    }
+
+    $remoteBranchRefs = (Invoke-Git @("for-each-ref", "--format=%(refname)", "refs/remotes/origin/")).Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $remoteBranches = [System.Collections.Generic.List[string]]::new()
+    foreach ($rRef in $remoteBranchRefs) {
+        if ($rRef.StartsWith("refs/remotes/origin/")) {
+            $rawB = $rRef.Substring("refs/remotes/origin/".Length).Trim()
+            if ($rawB -ne "HEAD") {
+                $cleanB = Get-CleanBranchName $rawB $remoteNames
+                if (-not [string]::IsNullOrWhiteSpace($cleanB)) {
+                    $remoteBranches.Add($cleanB)
+                } else {
+                    Write-Warning "⚠️ 发现畸形远端跟踪引用 '$rRef'，已安全忽略！"
+                }
+            }
+        }
+    }
 
     # 远端真值发现：只信 git ls-remote（见 REFERENCE 一）；失败回退旧枚举
     $remoteTruth = $null
     if ($hasRemote) {
-        $remoteTruth = Get-RemoteTruthMap
+        $remoteTruth = Get-RemoteTruthMap $remoteNames
     }
 
     $candidateBranchSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($lb in $localBranches) {
-        if ($lb -ne $IntegrationBranch) { $candidateBranchSet.Add($lb) | Out-Null }
+        if ($lb -ne $IntegrationBranch -and (Test-ValidBranchName $lb $remoteNames)) {
+            $candidateBranchSet.Add($lb) | Out-Null
+        }
     }
     if ($null -ne $remoteTruth) {
         foreach ($truthName in ($remoteTruth.Keys | Sort-Object)) {
             if ($truthName -eq $IntegrationBranch) { continue }
+            if (-not (Test-ValidBranchName $truthName $remoteNames)) { continue }
             if ($candidateBranchSet.Contains($truthName)) { continue }
             # 远端有、本地无：先按显式 SHA 拉取对象，再创建本地跟踪分支
             $truthSha = $remoteTruth[$truthName]
@@ -808,12 +974,11 @@ if (-not $isAllBranchesMode) {
         if ($hasRemote) {
             Write-Host "⚠️ 无法获取远端真值（git ls-remote 失败，可能离线），回退到本地 refs/remotes/origin 枚举。" -ForegroundColor Yellow
         }
-        foreach ($rb in $remoteBranches) {
-            $shortB = if ($rb.StartsWith("origin/")) { $rb.Substring(7) } else { $rb }
-            if ($shortB -ne $IntegrationBranch) {
+        foreach ($shortB in $remoteBranches) {
+            if ($shortB -ne $IntegrationBranch -and (Test-ValidBranchName $shortB $remoteNames)) {
                 if (-not $candidateBranchSet.Contains($shortB)) {
                     # 本地不存在，创建本地跟踪分支
-                    Invoke-Git @("branch", "--track", $shortB, $rb) | Out-Null
+                    Invoke-Git @("branch", "--track", $shortB, "origin/$shortB") | Out-Null
                     $candidateBranchSet.Add($shortB) | Out-Null
                 }
             }
@@ -1124,7 +1289,7 @@ if (-not $isAllBranchesMode) {
     # 批量推送所有对齐分支
     if ($doPush) {
         Write-Host ">> 安全推送所有对齐分支 (--force-with-lease)..." -ForegroundColor Cyan
-        $pushBranches = @($candidateBranchSet)
+        $pushBranches = @($candidateBranchSet | Where-Object { Test-ValidBranchName $_ $remoteNames })
         if ($pushBranches.Count -gt 0) {
             $pArgs = @("push", "--force-with-lease", "origin") + $pushBranches
             $pRes = Invoke-Git $pArgs

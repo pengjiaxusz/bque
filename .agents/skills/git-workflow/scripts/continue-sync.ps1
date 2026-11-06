@@ -184,6 +184,9 @@ function Test-ContentPreserved {
         $delCount = 0
         $delMatched = 0
         foreach ($ln in ($srcRes.Output -split "`r?`n")) {
+            if ($ln.StartsWith("diff --git") -or $ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
+                continue
+            }
             if ($ln.StartsWith("-")) {
                 $t = $ln.Substring(1).Trim()
                 if (-not [string]::IsNullOrWhiteSpace($t)) {
@@ -398,12 +401,32 @@ if ($Continue) {
             if ($postCherry.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($postCherry.Output))) {
                 foreach ($pcl in ($postCherry.Output -split "`r?`n")) {
                     if ($pcl -match '^\+\s+([0-9a-fA-F]+)\s+(.*)$') {
+                        $resHash = $Matches[1]
+                        $cSubj = $Matches[2].Trim()
                         # 空提交无 patch-id、cherry 恒报 `+`：无文件改动即视为已合入。
-                        $emptyCheck = Invoke-Git @("diff-tree", "--no-commit-id", "--name-only", "-r", $Matches[1])
+                        $emptyCheck = Invoke-Git @("diff-tree", "--no-commit-id", "--name-only", "-r", $resHash)
                         if ($emptyCheck.ExitCode -eq 0 -and [string]::IsNullOrWhiteSpace($emptyCheck.Output)) {
                             continue
                         }
-                        $guardFailures.Add("源分支 '$sb' 仍有未合入净提交: $($Matches[1]) $($Matches[2])")
+                        # 补丁上下文漂移容错：若因并行分支合入顺序导致 patch-id 变化，
+                        # 但落地提交的增删行已完整保留（Test-ContentPreserved），则判定已合入。
+                        if (-not [string]::IsNullOrWhiteSpace($cSubj)) {
+                            $landedBySubj = Invoke-Git @("log", $integBranch, "--fixed-strings", "--grep=$cSubj", "-n", "5", "--format=%H")
+                            if ($landedBySubj.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($landedBySubj.Output))) {
+                                $matched = $false
+                                foreach ($candHash in ($landedBySubj.Output -split "`r?`n")) {
+                                    $ch = $candHash.Trim()
+                                    if (-not [string]::IsNullOrWhiteSpace($ch) -and (Test-ContentPreserved $resHash $ch)) {
+                                        $matched = $true
+                                        break
+                                    }
+                                }
+                                if ($matched) {
+                                    continue
+                                }
+                            }
+                        }
+                        $guardFailures.Add("源分支 '$sb' 仍有未合入净提交: $resHash $cSubj")
                     }
                 }
             }
@@ -460,7 +483,8 @@ if ($Continue) {
 
     if ($hasRemote -and (-not $skipPush)) {
         Write-Host ">> 安全推送所有对齐分支 (--force-with-lease)..." -ForegroundColor Cyan
-        $pushBranches = $allSourceBranches | Where-Object { $_ -ne $integBranch }
+        $remoteNames = Get-RemoteNames
+        $pushBranches = $allSourceBranches | Where-Object { $_ -ne $integBranch -and (Test-ValidBranchName $_ $remoteNames) }
         if ($pushBranches.Count -gt 0) {
             $pArgs = @("push", "--force-with-lease", "origin") + $pushBranches
             $pRes = Invoke-Git $pArgs
