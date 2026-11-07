@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     只读全分支拓扑与净贡献巡检工具 (Show Branch Topology)
 
@@ -97,6 +97,9 @@ function Invoke-Git {
 }
 
 function Test-ContentPreserved {
+    # 逐提交内容校验（见 REFERENCE 四）：比较源提交与其落地提交的文件级增删行，
+    # 剥掉补丁头（diff --git / index / --- / +++ / @@）与行首 +/- 符号并 Trim 后，
+    # 校验新增内容（或纯删除提交的删除行）在落地提交中的保全度（>=80% 即判定通过，容许微调或消解上下文）。
     param(
         [string]$SourceHash,
         [string]$LandedHash
@@ -120,8 +123,13 @@ function Test-ContentPreserved {
     }
     $srcAddedCount = 0
     $srcAddedMatched = 0
+    $currentFile = ""
     foreach ($ln in ($srcRes.Output -split "`r?`n")) {
-        if ($ln.StartsWith("diff --git") -or $ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
+        if ($ln -match "^diff --git a/.*? b/(.*)$") {
+            $currentFile = $Matches[1].Trim()
+            continue
+        }
+        if ($ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
             continue
         }
         if ($ln.StartsWith("+")) {
@@ -132,21 +140,40 @@ function Test-ContentPreserved {
             $srcAddedCount++
             if ($landedSet.Contains($t)) {
                 $srcAddedMatched++
+            } elseif (-not [string]::IsNullOrWhiteSpace($currentFile)) {
+                $needle = if ($t.Length -gt 512) { $t.Substring(0, 512) } else { $t }
+                $checkPre = Invoke-Git @("grep", "-F", "-q", "-e", $needle, $LandedHash, "--", $currentFile)
+                if ($checkPre.ExitCode -eq 0) {
+                    $srcAddedMatched++
+                }
             }
         }
     }
     if ($srcAddedCount -eq 0) {
         $delCount = 0
         $delMatched = 0
+        $currentFile = ""
         foreach ($ln in ($srcRes.Output -split "`r?`n")) {
-            if ($ln.StartsWith("diff --git") -or $ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
+            if ($ln -match "^diff --git a/.*? b/(.*)$") {
+                $currentFile = $Matches[1].Trim()
+                continue
+            }
+            if ($ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
                 continue
             }
             if ($ln.StartsWith("-")) {
                 $t = $ln.Substring(1).Trim()
                 if (-not [string]::IsNullOrWhiteSpace($t)) {
                     $delCount++
-                    if ($landedSet.Contains($t)) { $delMatched++ }
+                    if ($landedSet.Contains($t)) {
+                        $delMatched++
+                    } elseif (-not [string]::IsNullOrWhiteSpace($currentFile)) {
+                        $needle = if ($t.Length -gt 512) { $t.Substring(0, 512) } else { $t }
+                        $checkPre = Invoke-Git @("grep", "-F", "-q", "-e", $needle, $LandedHash, "--", $currentFile)
+                        if ($checkPre.ExitCode -ne 0) {
+                            $delMatched++
+                        }
+                    }
                 }
             }
         }

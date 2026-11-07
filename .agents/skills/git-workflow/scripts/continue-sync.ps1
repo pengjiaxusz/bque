@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     分支同步冲突恢复与继续执行工具 (Continue Sync)
 
@@ -17,6 +17,9 @@
 .PARAMETER Continue
     解决冲突后继续执行剩余同步流程。
 
+.PARAMETER Skip
+    跳过当前中断的提交（例如当当前提交的改动已被等价合入或冲突解决后变为空提交时），并继续执行剩余队列。
+
 .PARAMETER Abort
     中止同步，恢复集成分支到合入前快照，清理同步状态。
 
@@ -33,6 +36,7 @@
 [CmdletBinding()]
 param(
     [switch]$Continue,
+    [switch]$Skip,
     [switch]$Abort,
     [switch]$Status,
     [switch]$NoPush,
@@ -110,6 +114,64 @@ function Invoke-Git {
     }
 }
 
+
+function Get-RemoteNames {
+    $res = Invoke-Git @("remote")
+    $names = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    if ($res.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($res.Output))) {
+        foreach ($line in ($res.Output -split "`r?`n")) {
+            $t = $line.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($t)) { $names.Add($t) | Out-Null }
+        }
+    }
+    if ($names.Count -eq 0) { $names.Add("origin") | Out-Null }
+    return $names
+}
+
+function Test-ValidBranchName {
+    param(
+        [string]$BranchName,
+        [System.Collections.Generic.HashSet[string]]$RemoteNames = $null
+    )
+    if ([string]::IsNullOrWhiteSpace($BranchName)) { return $false }
+    $b = $BranchName.Trim()
+
+    if ($RemoteNames -and $RemoteNames.Contains($b)) { return $false }
+
+    if ($b.StartsWith("heads/", [System.StringComparison]::OrdinalIgnoreCase) -or
+        $b.StartsWith("refs/", [System.StringComparison]::OrdinalIgnoreCase) -or
+        $b.StartsWith("remotes/", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+
+    if ($b.StartsWith("sync-backup/", [System.StringComparison]::OrdinalIgnoreCase) -or
+        $b.StartsWith("cleanup-backup/", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+
+    if ($b -match "(?i)(?:^|/)(?:refs|heads|remotes)(?:/|$)") {
+        return $false
+    }
+
+    if ($RemoteNames) {
+        foreach ($r in $RemoteNames) {
+            if ($b.StartsWith("$r/", [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $false
+            }
+        }
+    }
+
+    if ($b -eq "HEAD" -or $b.StartsWith("HEAD/", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+
+    $checkRes = Invoke-Git @("check-ref-format", "--branch", $b)
+    if ($checkRes.ExitCode -ne 0) {
+        return $false
+    }
+
+    return $true
+}
 function Get-WorktreeMap {
     $wtList = Invoke-Git @("worktree", "list", "--porcelain")
     $map = @{}
@@ -139,7 +201,7 @@ function Get-WorktreeMap {
 }
 
 function Test-ContentPreserved {
-    # 逐提交内容校验：比较源提交与其落地提交的文件级增删行，
+    # 逐提交内容校验（见 REFERENCE 四）：比较源提交与其落地提交的文件级增删行，
     # 剥掉补丁头（diff --git / index / --- / +++ / @@）与行首 +/- 符号并 Trim 后，
     # 校验新增内容（或纯删除提交的删除行）在落地提交中的保全度（>=80% 即判定通过，容许微调或消解上下文）。
     param(
@@ -165,8 +227,13 @@ function Test-ContentPreserved {
     }
     $srcAddedCount = 0
     $srcAddedMatched = 0
+    $currentFile = ""
     foreach ($ln in ($srcRes.Output -split "`r?`n")) {
-        if ($ln.StartsWith("diff --git") -or $ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
+        if ($ln -match "^diff --git a/.*? b/(.*)$") {
+            $currentFile = $Matches[1].Trim()
+            continue
+        }
+        if ($ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
             continue
         }
         if ($ln.StartsWith("+")) {
@@ -177,21 +244,40 @@ function Test-ContentPreserved {
             $srcAddedCount++
             if ($landedSet.Contains($t)) {
                 $srcAddedMatched++
+            } elseif (-not [string]::IsNullOrWhiteSpace($currentFile)) {
+                $needle = if ($t.Length -gt 512) { $t.Substring(0, 512) } else { $t }
+                $checkPre = Invoke-Git @("grep", "-F", "-q", "-e", $needle, $LandedHash, "--", $currentFile)
+                if ($checkPre.ExitCode -eq 0) {
+                    $srcAddedMatched++
+                }
             }
         }
     }
     if ($srcAddedCount -eq 0) {
         $delCount = 0
         $delMatched = 0
+        $currentFile = ""
         foreach ($ln in ($srcRes.Output -split "`r?`n")) {
-            if ($ln.StartsWith("diff --git") -or $ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
+            if ($ln -match "^diff --git a/.*? b/(.*)$") {
+                $currentFile = $Matches[1].Trim()
+                continue
+            }
+            if ($ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
                 continue
             }
             if ($ln.StartsWith("-")) {
                 $t = $ln.Substring(1).Trim()
                 if (-not [string]::IsNullOrWhiteSpace($t)) {
                     $delCount++
-                    if ($landedSet.Contains($t)) { $delMatched++ }
+                    if ($landedSet.Contains($t)) {
+                        $delMatched++
+                    } elseif (-not [string]::IsNullOrWhiteSpace($currentFile)) {
+                        $needle = if ($t.Length -gt 512) { $t.Substring(0, 512) } else { $t }
+                        $checkPre = Invoke-Git @("grep", "-F", "-q", "-e", $needle, $LandedHash, "--", $currentFile)
+                        if ($checkPre.ExitCode -ne 0) {
+                            $delMatched++
+                        }
+                    }
                 }
             }
         }
@@ -236,7 +322,7 @@ $allSourceBranches = @($state.AllSourceBranches)
 $declaredVerifyCmd = $state.DeclaredVerifyCmd
 $skipPush = [bool]$state.NoPush -or $NoPush
 
-if ($Status -or (-not $Continue -and -not $Abort)) {
+if ($Status -or (-not $Continue -and -not $Skip -and -not $Abort)) {
     Write-Host ""
     Write-Host "================== 分支同步中断状态 ==================" -ForegroundColor Cyan
     Write-Host "集成分支:       $integBranch"
@@ -254,8 +340,9 @@ if ($Status -or (-not $Continue -and -not $Abort)) {
     }
     Write-Host "------------------------------------------------------"
     Write-Host "操作指引:" -ForegroundColor Cyan
-    Write-Host "  继续同步: pwsh .agents/skills/git-workflow/scripts/continue-sync.ps1 -Continue" -ForegroundColor White
-    Write-Host "  中止回滚: pwsh .agents/skills/git-workflow/scripts/continue-sync.ps1 -Abort" -ForegroundColor White
+    Write-Host "  解决冲突后继续: pwsh .agents/skills/git-workflow/scripts/continue-sync.ps1 -Continue" -ForegroundColor White
+    Write-Host "  跳过当前提交:   pwsh .agents/skills/git-workflow/scripts/continue-sync.ps1 -Skip" -ForegroundColor White
+    Write-Host "  中止安全回滚:   pwsh .agents/skills/git-workflow/scripts/continue-sync.ps1 -Abort" -ForegroundColor White
     Write-Host "======================================================" -ForegroundColor Cyan
     Write-Host ""
     return
@@ -273,33 +360,50 @@ if ($Abort) {
     return
 }
 
-if ($Continue) {
-    # 检查冲突文件
-    $unmerged = Invoke-Git @("diff", "--name-only", "--diff-filter=U")
-    if (-not [string]::IsNullOrWhiteSpace($unmerged.Output)) {
-        throw "仍有冲突文件未解决！请先在以下文件中解决冲突并执行 git add 后再继续：`n$($unmerged.Output)"
-    }
-
-    Write-Host ">> 1. 检查并继续当前 cherry-pick 提交..." -ForegroundColor Cyan
+if ($Continue -or $Skip) {
     $editorCmd = if ([System.Environment]::OSVersion.Platform -like "*Win*" -or $IsWindows) { "cmd.exe /c exit 0" } else { "true" }
     $gitDirRes = Invoke-Git @("rev-parse", "--git-dir")
     $gitDir = if ($gitDirRes.ExitCode -eq 0) { $gitDirRes.Output } else { ".git" }
     try { $gitDir = (Resolve-Path $gitDir).Path } catch {}
     $inCherryPick = (Test-Path (Join-Path $gitDir "CHERRY_PICK_HEAD"))
 
-    if ($inCherryPick) {
-        $contRes = Invoke-Git @("-c", "core.editor=$editorCmd", "cherry-pick", "--continue", "--no-edit")
-        if ($contRes.ExitCode -ne 0) {
-            throw "git cherry-pick --continue 执行失败: $($contRes.Error)"
+    if ($Skip) {
+        Write-Host ">> 正在跳过当前提交 [$($currentIndex + 1)/$($orderedCommits.Count)]: $($orderedCommits[$currentIndex].Hash) - $($orderedCommits[$currentIndex].Subject)..." -ForegroundColor Yellow
+        if ($inCherryPick) {
+            $skipRes = Invoke-Git @("cherry-pick", "--skip")
+            if ($skipRes.ExitCode -ne 0) {
+                # 若 cherry-pick --skip 报错但工作区干净且 CHERRY_PICK_HEAD 消失，仍可继续
+                $inCherryPick = (Test-Path (Join-Path $gitDir "CHERRY_PICK_HEAD"))
+                if ($inCherryPick) {
+                    throw "git cherry-pick --skip 执行失败: $($skipRes.Error)"
+                }
+            }
         }
-        Write-Host "✅ 当前提交合入成功！" -ForegroundColor Green
+        $state.CurrentCommitIndex = $currentIndex
+        [System.IO.File]::WriteAllText($stateFilePath, (ConvertTo-Json $state -Depth 10), [System.Text.Encoding]::UTF8)
+        Write-Host "⏭️ 已成功跳过提交 $($orderedCommits[$currentIndex].Hash)。" -ForegroundColor Yellow
     } else {
-        $lastLog = (Invoke-Git @("log", "-1", "--format=%s")).Output
-        $targetSubj = $orderedCommits[$currentIndex].Subject
-        if ($lastLog -match [regex]::Escape($targetSubj)) {
-            Write-Host "ℹ️ 检测到当前提交已在外部完成合入 ($targetSubj)，自动推进至后续队列。" -ForegroundColor Green
+        # 检查冲突文件
+        $unmerged = Invoke-Git @("diff", "--name-only", "--diff-filter=U")
+        if (-not [string]::IsNullOrWhiteSpace($unmerged.Output)) {
+            throw "仍有冲突文件未解决！请先在以下文件中解决冲突并执行 git add 后再继续：`n$($unmerged.Output)"
+        }
+
+        Write-Host ">> 1. 检查并继续当前 cherry-pick 提交..." -ForegroundColor Cyan
+        if ($inCherryPick) {
+            $contRes = Invoke-Git @("-c", "core.editor=$editorCmd", "cherry-pick", "--continue", "--no-edit")
+            if ($contRes.ExitCode -ne 0) {
+                throw "git cherry-pick --continue 执行失败: $($contRes.Error)"
+            }
+            Write-Host "✅ 当前提交合入成功！" -ForegroundColor Green
         } else {
-            Write-Host "ℹ️ 当前无进行中的 cherry-pick 操作，继续后续队列检查。" -ForegroundColor Yellow
+            $lastLog = (Invoke-Git @("log", "-1", "--format=%s")).Output
+            $targetSubj = $orderedCommits[$currentIndex].Subject
+            if ($lastLog -match [regex]::Escape($targetSubj)) {
+                Write-Host "ℹ️ 检测到当前提交已在外部完成合入 ($targetSubj)，自动推进至后续队列。" -ForegroundColor Green
+            } else {
+                Write-Host "ℹ️ 当前无进行中的 cherry-pick 操作，继续后续队列检查。" -ForegroundColor Yellow
+            }
         }
     }
 
@@ -366,22 +470,39 @@ if ($Continue) {
                             # 补丁上下文漂移容错：若因并行分支合入顺序导致 patch-id 变化，
                             # 但落地提交的增删行已完整保留（Test-ContentPreserved），则判定已合入。
                             if (-not [string]::IsNullOrWhiteSpace($cSubj)) {
-                                $landedBySubj = Invoke-Git @("log", $integBranch, "--fixed-strings", "--grep=$cSubj", "-n", "5", "--format=%H")
-                                if ($landedBySubj.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($landedBySubj.Output))) {
-                                    $matched = $false
-                                    foreach ($candHash in ($landedBySubj.Output -split "`r?`n")) {
-                                        $ch = $candHash.Trim()
-                                        if (-not [string]::IsNullOrWhiteSpace($ch) -and (Test-ContentPreserved $resHash $ch)) {
-                                            $matched = $true
-                                            break
-                                        }
-                                    }
-                                    if ($matched) {
-                                        continue
+                            $landedBySubj = Invoke-Git @("log", $integBranch, "--fixed-strings", "--grep=$cSubj", "-n", "5", "--format=%H")
+                            if ($landedBySubj.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($landedBySubj.Output))) {
+                                $matched = $false
+                                foreach ($candHash in ($landedBySubj.Output -split "`r?`n")) {
+                                    $ch = $candHash.Trim()
+                                    if (-not [string]::IsNullOrWhiteSpace($ch) -and (Test-ContentPreserved $resHash $ch)) {
+                                        $matched = $true
+                                        break
                                     }
                                 }
+                                if ($matched) {
+                                    continue
+                                }
                             }
-                            $guardFailures.Add("源分支 '$sb' 仍有未合入净提交: $resHash $cSubj")
+                        }
+                        if (Test-ContentPreserved $resHash $integBranch) {
+                            continue
+                        }
+                        $descendants = Invoke-Git @("rev-list", "$resHash..$bRef", "--reverse")
+                        if ($descendants.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($descendants.Output))) {
+                            $descMerged = $false
+                            foreach ($descHash in ($descendants.Output -split "`r?`n")) {
+                                $dh = $descHash.Trim()
+                                if (-not [string]::IsNullOrWhiteSpace($dh) -and (Test-ContentPreserved $dh $integBranch)) {
+                                    $descMerged = $true
+                                    break
+                                }
+                            }
+                            if ($descMerged) {
+                                continue
+                            }
+                        }
+                        $guardFailures.Add("源分支 '$sb' 仍有未合入净提交: $resHash $cSubj")
                         }
                     }
                 }
@@ -424,6 +545,23 @@ if ($Continue) {
                                 if ($matched) {
                                     continue
                                 }
+                            }
+                        }
+                        if (Test-ContentPreserved $resHash $integBranch) {
+                            continue
+                        }
+                        $descendants = Invoke-Git @("rev-list", "$resHash..$bRef", "--reverse")
+                        if ($descendants.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($descendants.Output))) {
+                            $descMerged = $false
+                            foreach ($descHash in ($descendants.Output -split "`r?`n")) {
+                                $dh = $descHash.Trim()
+                                if (-not [string]::IsNullOrWhiteSpace($dh) -and (Test-ContentPreserved $dh $integBranch)) {
+                                    $descMerged = $true
+                                    break
+                                }
+                            }
+                            if ($descMerged) {
+                                continue
                             }
                         }
                         $guardFailures.Add("源分支 '$sb' 仍有未合入净提交: $resHash $cSubj")

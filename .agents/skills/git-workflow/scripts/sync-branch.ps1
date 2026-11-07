@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Worktree 感知的极速线性化全分支同步脚本 (Branch Sync Fast-Track Engine)
 
@@ -519,8 +519,13 @@ function Test-ContentPreserved {
     }
     $srcAddedCount = 0
     $srcAddedMatched = 0
+    $currentFile = ""
     foreach ($ln in ($srcRes.Output -split "`r?`n")) {
-        if ($ln.StartsWith("diff --git") -or $ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
+        if ($ln -match "^diff --git a/.*? b/(.*)$") {
+            $currentFile = $Matches[1].Trim()
+            continue
+        }
+        if ($ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
             continue
         }
         if ($ln.StartsWith("+")) {
@@ -531,21 +536,40 @@ function Test-ContentPreserved {
             $srcAddedCount++
             if ($landedSet.Contains($t)) {
                 $srcAddedMatched++
+            } elseif (-not [string]::IsNullOrWhiteSpace($currentFile)) {
+                $needle = if ($t.Length -gt 512) { $t.Substring(0, 512) } else { $t }
+                $checkPre = Invoke-Git @("grep", "-F", "-q", "-e", $needle, $LandedHash, "--", $currentFile)
+                if ($checkPre.ExitCode -eq 0) {
+                    $srcAddedMatched++
+                }
             }
         }
     }
     if ($srcAddedCount -eq 0) {
         $delCount = 0
         $delMatched = 0
+        $currentFile = ""
         foreach ($ln in ($srcRes.Output -split "`r?`n")) {
-            if ($ln.StartsWith("diff --git") -or $ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
+            if ($ln -match "^diff --git a/.*? b/(.*)$") {
+                $currentFile = $Matches[1].Trim()
+                continue
+            }
+            if ($ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
                 continue
             }
             if ($ln.StartsWith("-")) {
                 $t = $ln.Substring(1).Trim()
                 if (-not [string]::IsNullOrWhiteSpace($t)) {
                     $delCount++
-                    if ($landedSet.Contains($t)) { $delMatched++ }
+                    if ($landedSet.Contains($t)) {
+                        $delMatched++
+                    } elseif (-not [string]::IsNullOrWhiteSpace($currentFile)) {
+                        $needle = if ($t.Length -gt 512) { $t.Substring(0, 512) } else { $t }
+                        $checkPre = Invoke-Git @("grep", "-F", "-q", "-e", $needle, $LandedHash, "--", $currentFile)
+                        if ($checkPre.ExitCode -ne 0) {
+                            $delMatched++
+                        }
+                    }
                 }
             }
         }
@@ -593,6 +617,23 @@ function Test-BranchFullyMerged {
                         if ($matched) {
                             continue
                         }
+                    }
+                }
+                if (Test-ContentPreserved $resHash $TargetBranch) {
+                    continue
+                }
+                $descendants = Invoke-Git @("rev-list", "$resHash..$SourceSnapshotRef", "--reverse")
+                if ($descendants.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($descendants.Output))) {
+                    $descMerged = $false
+                    foreach ($descHash in ($descendants.Output -split "`r?`n")) {
+                        $dh = $descHash.Trim()
+                        if (-not [string]::IsNullOrWhiteSpace($dh) -and (Test-ContentPreserved $dh $TargetBranch)) {
+                            $descMerged = $true
+                            break
+                        }
+                    }
+                    if ($descMerged) {
+                        continue
                     }
                 }
                 $missingCommits.Add($pcl.Trim())
@@ -1127,7 +1168,8 @@ if (-not $isAllBranchesMode) {
         }
         Write-Host "------------------------------------------------------------------"
         if ($divergedBranches.Count -gt 0) {
-            Write-Host "分叉隔离分支: $($divergedBranches.Count) 个 ($(($divergedBranches | ForEach-Object { "'$_'" }) -join ', '))，执行 -Apply 时将跳过并隔离（见 REFERENCE 三）" -ForegroundColor Red
+            Write-Host "分叉隔离分支: $($divergedBranches.Count) 个 ($(($divergedBranches | ForEach-Object { "'$_'" }) -join ', '))，存在本地与远端分叉冲突（见 REFERENCE 三）" -ForegroundColor Red
+            Write-Host "⚠️ 警告：检测到分叉分支！执行 -Apply 时将硬性拦截中断，绝不允许在存在分叉分支时部分合入或重置！" -ForegroundColor Red
             Write-Host "------------------------------------------------------------------"
         }
         Write-Host "一键执行所有分支同步、对齐与推送:" -ForegroundColor Yellow
@@ -1138,6 +1180,13 @@ if (-not $isAllBranchesMode) {
     }
 
     # 执行阶段 (Apply)
+    if ($divergedBranches.Count -gt 0) {
+        Write-Host "❌ 严重拦截：检测到以下分支处于分叉隔离状态（Diverged）：$($divergedBranches -join ', ')！" -ForegroundColor Red
+        Write-Host "   分叉分支本地与远端存在互斥提交，若继续执行会导致局部提交遗漏或被误重置。" -ForegroundColor Yellow
+        Write-Host "   请先按照上述指引人工处置分叉分支，或手动将分叉分支对齐后再运行 -Apply！" -ForegroundColor Yellow
+        throw "执行中断：存在分叉分支 $($divergedBranches -join ', ')，已硬性拦截以防代码遗漏！"
+    }
+
     $timestamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
     $backupIntegRef = "refs/sync-backup/$IntegrationBranch/$timestamp-$integCommit"
     Invoke-Git @("update-ref", $backupIntegRef, $fullIntegCommit) | Out-Null
