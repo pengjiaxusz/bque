@@ -6,6 +6,8 @@
 set shell := ["sh", "-uc"]
 [windows]
 set shell := ["pwsh", "-NoProfile", "-Command"]
+# Let the project area override a framework recipe with the same name (e.g. a `test` that pre-builds an artifact), instead of editing the managed imports.
+set allow-duplicate-recipes := true
 
 
 import 'just/bque.just'
