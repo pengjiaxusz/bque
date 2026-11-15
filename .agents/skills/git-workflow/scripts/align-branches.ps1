@@ -1,23 +1,23 @@
 <#
 .SYNOPSIS
-    批量分支与 Worktree 对齐及安全推送工具 (Align Branches)
+    Batch branch and worktree alignment and safe push tool (Align Branches)
 
 .DESCRIPTION
-    将指定或全部本地分支及关联 Worktree 批量重置对齐至目标提交点（默认当前集成分支 Tip），
-    并使用 --force-with-lease 安全推送到远端。
-    Worktree 占用的分支自动在对应工作树目录下执行 git reset --hard，非占用分支执行 git branch -f。
+    Batch resets and aligns specified or all local branches and associated worktrees to target commit (defaults to current integration branch tip),
+    safely pushing to remote using --force-with-lease.
+    Branches checked out in worktrees are reset via git reset --hard in their worktree directory; other branches are updated via git branch -f.
 
 .PARAMETER TargetCommit
-    对齐目标提交或分支名。默认自动推导为当前目录激活的集成分支。
+    Target commit or branch name to align to. Defaults to active integration branch.
 
 .PARAMETER Branches
-    需要对齐的分支名称列表。若未指定，对齐除目标分支外的所有本地分支。
+    List of branch names to align. If omitted, aligns all local branches except target branch.
 
 .PARAMETER Apply
-    是否执行实际重置与推送。未指定时仅预检打印。
+    Execute actual reset and push. Dry run by default.
 
 .PARAMETER NoPush
-    跳过推送。
+    Skip remote push.
 #>
 
 [CmdletBinding()]
@@ -63,7 +63,7 @@ function Invoke-Git {
         $pinfo.WorkingDirectory = $WorkingDir
     }
 
-    # 防交互与外部编辑器挂死：禁用交互式凭据提示与外部编辑器弹窗
+    # Non-interactive guard: disable interactive credential prompts and external editor popups
     $isWin = [System.Environment]::OSVersion.Platform -like "*Win*" -or $IsWindows
     $pinfo.Environment["GIT_TERMINAL_PROMPT"] = "0"
     $pinfo.Environment["GIT_OPTIONAL_LOCKS"] = "0"
@@ -91,7 +91,7 @@ function Invoke-Git {
             try { $process.Kill() } catch {}
         }
         $cmdStr = "git " + (($CommandArgs | ForEach-Object { Format-GitArg $_ }) -join " ")
-        throw "Git 命令执行超时（超过 $($TimeoutSeconds)s）已被强制终止：$cmdStr"
+        throw "Git command timed out (exceeded $($TimeoutSeconds)s) and was terminated: $cmdStr"
     }
 
     $process.WaitForExit()
@@ -105,16 +105,17 @@ function Invoke-Git {
 }
 
 function Get-RemoteNames {
+    $remotes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $res = Invoke-Git @("remote")
-    $names = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     if ($res.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($res.Output))) {
         foreach ($line in ($res.Output -split "`r?`n")) {
-            $t = $line.Trim()
-            if (-not [string]::IsNullOrWhiteSpace($t)) { $names.Add($t) | Out-Null }
+            $r = $line.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($r)) {
+                $remotes.Add($r) | Out-Null
+            }
         }
     }
-    if ($names.Count -eq 0) { $names.Add("origin") | Out-Null }
-    return $names
+    return $remotes
 }
 
 function Test-ValidBranchName {
@@ -125,28 +126,28 @@ function Test-ValidBranchName {
     if ([string]::IsNullOrWhiteSpace($BranchName)) { return $false }
     $b = $BranchName.Trim()
 
-    # 1. 绝不能等于任何远程仓库名（如 origin, upstream）
+    # 1. Never equal to any remote name (e.g. origin, upstream)
     if ($RemoteNames -and $RemoteNames.Contains($b)) { return $false }
 
-    # 2. 绝不能包含底层 ref 命名空间或递归前缀（heads/..., refs/..., remotes/...）
+    # 2. Never contain ref namespaces or recursive prefixes (heads/..., refs/..., remotes/...)
     if ($b.StartsWith("heads/", [System.StringComparison]::OrdinalIgnoreCase) -or
         $b.StartsWith("refs/", [System.StringComparison]::OrdinalIgnoreCase) -or
         $b.StartsWith("remotes/", [System.StringComparison]::OrdinalIgnoreCase)) {
         return $false
     }
 
-    # 3. 绝不能包含内部备份命名空间
+    # 3. Never contain internal backup namespaces
     if ($b.StartsWith("sync-backup/", [System.StringComparison]::OrdinalIgnoreCase) -or
         $b.StartsWith("cleanup-backup/", [System.StringComparison]::OrdinalIgnoreCase)) {
         return $false
     }
 
-    # 4. 绝不能包含套娃或递归路径片段（如包含 /heads/、/refs/、/remotes/）
+    # 4. Never contain nested path fragments (/heads/, /refs/, /remotes/)
     if ($b -match "(?i)(?:^|/)(?:refs|heads|remotes)(?:/|$)") {
         return $false
     }
 
-    # 5. 绝不能以 remote/ 开头（如 origin/main，属于远程跟踪引用而非本地特性分支名）
+    # 5. Never start with remote/ (e.g. origin/main)
     if ($RemoteNames) {
         foreach ($r in $RemoteNames) {
             if ($b.StartsWith("$r/", [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -155,12 +156,12 @@ function Test-ValidBranchName {
         }
     }
 
-    # 6. 特殊保留名
+    # 6. Special reserved names
     if ($b -eq "HEAD" -or $b.StartsWith("HEAD/", [System.StringComparison]::OrdinalIgnoreCase)) {
         return $false
     }
 
-    # 7. Git check-ref-format 校验
+    # 7. Git check-ref-format validation
     $checkRes = Invoke-Git @("check-ref-format", "--branch", $b)
     if ($checkRes.ExitCode -ne 0) {
         return $false
@@ -177,7 +178,7 @@ function Get-CleanBranchName {
     if ([string]::IsNullOrWhiteSpace($RefOrBranch)) { return "" }
     $clean = $RefOrBranch.Trim()
 
-    # 逐层剥离前缀（防止意外传入 refs/heads/ 或 refs/remotes/）
+    # Strip prefixes layer by layer
     while ($clean.StartsWith("refs/heads/", [System.StringComparison]::OrdinalIgnoreCase) -or
            $clean.StartsWith("refs/remotes/", [System.StringComparison]::OrdinalIgnoreCase)) {
         if ($clean.StartsWith("refs/heads/", [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -214,7 +215,7 @@ function Resolve-IntegrationBranch {
         if (-not [string]::IsNullOrWhiteSpace($cExplicit)) {
             return $cExplicit
         }
-        throw "显式指定的集成分支名称非法或无效: '$ExplicitBranch'"
+        throw "Explicitly specified integration branch name is invalid: '$ExplicitBranch'"
     }
 
     $symRef = Invoke-Git @("symbolic-ref", "-q", "HEAD")
@@ -223,7 +224,7 @@ function Resolve-IntegrationBranch {
         if ($trimmed.StartsWith("refs/heads/")) {
             $cand = Get-CleanBranchName ($trimmed.Substring(11)) $RemoteNames
             if (-not [string]::IsNullOrWhiteSpace($cand)) {
-                Write-Host "💡 自动选定当前目录激活的分支作为集成分支: '$cand'" -ForegroundColor Cyan
+                Write-Host "💡 Automatically selected active branch in current directory as integration branch: '$cand'" -ForegroundColor Cyan
                 return $cand
             }
         }
@@ -242,7 +243,7 @@ function Resolve-IntegrationBranch {
             } elseif ($line.StartsWith("branch refs/heads/")) {
                 $cand = Get-CleanBranchName ($line.Substring(18)) $RemoteNames
                 if ($wPath -eq $currentPath -and (-not [string]::IsNullOrWhiteSpace($cand))) {
-                    Write-Host "💡 检测到当前 Worktree 对应的登记分支作为集成分支: '$cand'" -ForegroundColor Cyan
+                    Write-Host "💡 Detected branch checked out in current Worktree as integration branch: '$cand'" -ForegroundColor Cyan
                     return $cand
                 }
             }
@@ -262,7 +263,7 @@ function Resolve-IntegrationBranch {
             }
         }
         if ($candidates.Count -eq 1) {
-            Write-Host "💡 检测到指向当前 HEAD 的唯一本地分支作为集成分支: '$($candidates[0])'" -ForegroundColor Cyan
+            Write-Host "💡 Detected sole local branch pointing at current HEAD as integration branch: '$($candidates[0])'" -ForegroundColor Cyan
             return $candidates[0]
         }
     }
@@ -270,7 +271,7 @@ function Resolve-IntegrationBranch {
     if (-not [string]::IsNullOrWhiteSpace($DeclaredBranch)) {
         $cDeclared = Get-CleanBranchName $DeclaredBranch $RemoteNames
         if (-not [string]::IsNullOrWhiteSpace($cDeclared)) {
-            Write-Host "💡 根据 SKILL.md 登记选定集成分支: '$cDeclared'" -ForegroundColor Cyan
+            Write-Host "💡 Selected integration branch registered in SKILL.md: '$cDeclared'" -ForegroundColor Cyan
             return $cDeclared
         }
     }
@@ -282,14 +283,14 @@ function Resolve-IntegrationBranch {
             if ($trimmed.StartsWith("refs/remotes/origin/")) {
                 $rh = Get-CleanBranchName ($trimmed.Substring("refs/remotes/origin/".Length)) $RemoteNames
                 if (-not [string]::IsNullOrWhiteSpace($rh)) {
-                    Write-Host "💡 根据 origin/HEAD 选定集成分支: '$rh'" -ForegroundColor Cyan
+                    Write-Host "💡 Selected integration branch from origin/HEAD: '$rh'" -ForegroundColor Cyan
                     return $rh
                 }
             }
         }
         foreach ($b in @("main", "dev", "develop", "master", "trunk")) {
             if ((Invoke-Git @("rev-parse", "--verify", "origin/$b")).ExitCode -eq 0) {
-                Write-Host "💡 探测到远端常用集成分支: '$b'" -ForegroundColor Cyan
+                Write-Host "💡 Detected common remote integration branch: '$b'" -ForegroundColor Cyan
                 return $b
             }
         }
@@ -297,7 +298,7 @@ function Resolve-IntegrationBranch {
 
     foreach ($b in @("main", "dev", "develop", "master", "trunk")) {
         if ((Invoke-Git @("rev-parse", "--verify", $b)).ExitCode -eq 0) {
-            Write-Host "💡 探测到本地常用集成分支: '$b'" -ForegroundColor Cyan
+            Write-Host "💡 Detected common local integration branch: '$b'" -ForegroundColor Cyan
             return $b
         }
     }
@@ -349,7 +350,7 @@ function Get-DirtyItems {
     $cmd = if ($WorkingDir) { @("-C", $WorkingDir, "status", "--porcelain") } else { @("status", "--porcelain") }
     $res = Invoke-Git $cmd
     if ($res.ExitCode -ne 0) {
-        throw "无法获取 Git 仓库状态: $($res.Error)"
+        throw "Failed to get Git status: $($res.Error)"
     }
     $dirty = [System.Collections.Generic.List[string]]::new()
     if (-not [string]::IsNullOrWhiteSpace($res.Output)) {
@@ -395,7 +396,7 @@ $declaredDirtyPatterns = [System.Collections.Generic.List[string]]::new()
 if (Test-Path $skillDocPath) {
     try {
         $skillDocContent = [System.IO.File]::ReadAllText($skillDocPath, [System.Text.Encoding]::UTF8)
-        $patRegex = '(?m)^[-*]\s*(?:忽略未追踪路径正则|忽略路径正则|忽略正则|Dirty ignore regex|Dirty ignore pattern)[：:]\s*`?([^\r\n`]+)`?'
+        $patRegex = '(?m)^[-*]\s*(?:\u5ffd\u7565\u672a\u8ffd\u8e2a\u8def\u5f84\u6b63\u5219|\u5ffd\u7565\u8def\u5f84\u6b63\u5219|\u5ffd\u7565\u6b63\u5219|Dirty ignore regex|Dirty ignore pattern)[\uFF1A:]\s*`?([^\r\n`]+)`?'
         $patMatches = [regex]::Matches($skillDocContent, $patRegex)
         foreach ($m in $patMatches) {
             $patVal = $m.Groups[1].Value.Trim()
@@ -414,7 +415,7 @@ if ([string]::IsNullOrWhiteSpace($TargetCommit)) {
 
 $targetShaRes = Invoke-Git @("rev-parse", $TargetCommit)
 if ($targetShaRes.ExitCode -ne 0) {
-    throw "无法解析对齐目标提交 '$TargetCommit': $($targetShaRes.Error)"
+    throw "Failed to resolve target commit '$TargetCommit': $($targetShaRes.Error)"
 }
 $targetSha = $targetShaRes.Output
 $targetShaShort = $targetSha.Substring(0, [Math]::Min(7, $targetSha.Length))
@@ -423,7 +424,7 @@ $wtInfo = Get-WorktreeMap
 $currentDir = (Get-Location).Path
 try { $currentDir = (Resolve-Path $currentDir).Path } catch {}
 
-# 解析要对齐的分支列表
+# Parse list of branches to align
 $branchesToAlign = [System.Collections.Generic.List[string]]::new()
 if ($Branches.Count -gt 0) {
     foreach ($b in $Branches) {
@@ -449,15 +450,15 @@ if ($Branches.Count -gt 0) {
 }
 
 if ($branchesToAlign.Count -eq 0) {
-    Write-Host "ℹ️ 没有需要对齐的分支。" -ForegroundColor Yellow
+    Write-Host "ℹ️ No branches require alignment." -ForegroundColor Yellow
     return
 }
 
 Write-Host ""
-Write-Host "========================== 批量分支对齐 ==========================" -ForegroundColor Cyan
-Write-Host "目标基线: $TargetCommit ($targetShaShort)" -ForegroundColor Green
-Write-Host "目标分支数: $($branchesToAlign.Count)" -ForegroundColor White
-Write-Host "------------------------------------------------------------------"
+Write-Host "========================== Batch Branch Alignment ==========================" -ForegroundColor Cyan
+Write-Host "Target baseline:   $TargetCommit ($targetShaShort)" -ForegroundColor Green
+Write-Host "Branches to align: $($branchesToAlign.Count)" -ForegroundColor White
+Write-Host "----------------------------------------------------------------------------"
 
 $previewList = [System.Collections.Generic.List[PSCustomObject]]::new()
 foreach ($b in $branchesToAlign) {
@@ -475,32 +476,32 @@ foreach ($b in $branchesToAlign) {
 }
 
 $fmt = "{0,-22} {1,-10} {2,-20} {3}"
-Write-Host ([string]::Format($fmt, "分支名称", "当前 SHA", "重置途径", "Worktree 路径")) -ForegroundColor DarkGray
+Write-Host ([string]::Format($fmt, "Branch Name", "Current SHA", "Reset Action", "Worktree Path")) -ForegroundColor DarkGray
 Write-Host ("-" * 68) -ForegroundColor DarkGray
 foreach ($item in $previewList) {
     Write-Host ([string]::Format($fmt, $item.Branch, $item.Current, $item.Action, $item.Worktree)) -ForegroundColor White
 }
-Write-Host "------------------------------------------------------------------"
+Write-Host "----------------------------------------------------------------------------"
 
 if (-not $Apply) {
-    Write-Host "⚠️ 当前为预检模式 (Dry Run)，未实际执行任何重置与推送。" -ForegroundColor Yellow
-    Write-Host "执行对齐与推送请加 -Apply:" -ForegroundColor Cyan
+    Write-Host "⚠️ Currently in dry run mode. No resets or pushes were executed." -ForegroundColor Yellow
+    Write-Host "To execute alignment and push, run with -Apply:" -ForegroundColor Cyan
     Write-Host "  pwsh .agents/skills/git-workflow/scripts/align-branches.ps1 -TargetCommit '$TargetCommit' -Apply" -ForegroundColor White
-    Write-Host "==================================================================" -ForegroundColor Cyan
+    Write-Host "============================================================================" -ForegroundColor Cyan
     Write-Host ""
     return
 }
 
-Write-Host ">> 开始批量执行对齐..." -ForegroundColor Cyan
+Write-Host ">> Executing batch alignment..." -ForegroundColor Cyan
 $dirtyCurr = Get-DirtyItems $wtInfo.AllPaths $declaredDirtyPatterns
 if ($dirtyCurr.Count -gt 0) {
-    throw "当前工作区存在未提交改动，严禁执行对齐：`n$($dirtyCurr -join "`n")"
+    throw "Current workspace has uncommitted changes. Alignment aborted:`n$($dirtyCurr -join "`n")"
 }
 foreach ($item in $previewList) {
     if ($item.Worktree -ne "-" -and $item.Worktree -ne $currentDir) {
         $wtDirty = Get-DirtyItems $wtInfo.AllPaths $declaredDirtyPatterns $item.Worktree
         if ($wtDirty.Count -gt 0) {
-            throw "占用分支 '$($item.Branch)' 的 Worktree ($($item.Worktree)) 存在未提交改动，严禁强制重置：`n$($wtDirty -join "`n")"
+            throw "Worktree ($($item.Worktree)) occupying branch '$($item.Branch)' has uncommitted changes. Alignment aborted:`n$($wtDirty -join "`n")"
         }
     }
 }
@@ -510,37 +511,37 @@ foreach ($item in $previewList) {
         $wPath = $wtInfo.BranchToPath[$b]
         if ($wPath -eq $currentDir) {
             $r = Invoke-Git @("reset", "--hard", $targetSha)
-            if ($r.ExitCode -ne 0) { throw "重置当前工作区失败: $($r.Error)" }
+            if ($r.ExitCode -ne 0) { throw "Resetting current workspace failed: $($r.Error)" }
         } else {
             $r = Invoke-Git @("-C", $wPath, "reset", "--hard", $targetSha)
-            if ($r.ExitCode -ne 0) { throw "重置 Worktree ($wPath) 失败: $($r.Error)" }
+            if ($r.ExitCode -ne 0) { throw "Resetting Worktree ($wPath) failed: $($r.Error)" }
         }
     } else {
         $r = Invoke-Git @("branch", "-f", $b, $targetSha)
-        if ($r.ExitCode -ne 0) { throw "更新分支指针 $b 失败: $($r.Error)" }
+        if ($r.ExitCode -ne 0) { throw "Updating branch ref $b failed: $($r.Error)" }
     }
-    Write-Host "  ✅ $b 已对齐至 $targetShaShort" -ForegroundColor Green
+    Write-Host "  ✅ $b aligned to $targetShaShort" -ForegroundColor Green
 }
 
 if ($hasRemote -and (-not $NoPush)) {
-    Write-Host ">> 正在安全推送已对齐分支至远端 (--force-with-lease)..." -ForegroundColor Cyan
+    Write-Host ">> Safely pushing aligned branches to remote (--force-with-lease)..." -ForegroundColor Cyan
     $pushBranches = @($branchesToAlign | Where-Object { Test-ValidBranchName $_ $remoteNames })
     $pushArgs = @("push", "--force-with-lease", "origin") + $pushBranches
     $pRes = Invoke-Git $pushArgs
     if ($pRes.ExitCode -ne 0) {
-        Write-Warning "批量推送告警: $($pRes.Error)，正在逐个分支安全补推..."
+        Write-Warning "Batch push warning: $($pRes.Error); attempting per-branch safe push..."
         foreach ($b in $branchesToAlign) {
             $subPush = Invoke-Git @("push", "--force-with-lease", "origin", $b)
             if ($subPush.ExitCode -eq 0) {
-                Write-Host "  ✅ $b 已推送到 origin" -ForegroundColor Green
+                Write-Host "  ✅ $b pushed to origin" -ForegroundColor Green
             } else {
-                Write-Warning "  ⚠️ $b 推送失败: $($subPush.Error)"
+                Write-Warning "  ⚠️ $b push failed: $($subPush.Error)"
             }
         }
     } else {
-        Write-Host "  ✅ 全部 $($branchesToAlign.Count) 个分支已安全推送到 origin" -ForegroundColor Green
+        Write-Host "  ✅ All $($branchesToAlign.Count) branches safely pushed to origin" -ForegroundColor Green
     }
 }
 
-Write-Host "================== 批量分支对齐完成 ==================" -ForegroundColor Green
+Write-Host "================== Batch Branch Alignment Completed ==================" -ForegroundColor Green
 Write-Host ""

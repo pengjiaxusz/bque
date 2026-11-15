@@ -1,5 +1,5 @@
-# bque 命令判定矩阵与安全指南 / Usage Matrix & Safety Guide
 
+# bque Command Decision Matrix & Safety Guide
 
 ## 1. Command Mapping Matrix
 
@@ -17,6 +17,13 @@
 | `pnpm bench` | `just bench` | `bque bench` | `High` (Freezes background builds) |
 | `cargo fmt` | `cargo fmt` (Direct) | **Bypass** | Foreground |
 | `git status` / `git commit` | Direct commands | **Bypass** | Foreground |
+| Any ad-hoc heavy command | `just q-run <cmd>` | `bque run` | `Idle` |
+| Any ad-hoc benchmark | `just q-bench <cmd>` | `bque bench` | `High` (Freezes background builds) |
+
+`q-run` / `q-bench` are the generic wrappers for commands that have no dedicated `just` recipe.
+Do not add a `--` separator after the recipe name (`just q-run cargo build --release`), since it
+would become part of the wrapped command. On Unix / CI these wrappers execute the command directly;
+bque is a Windows-only global lock.
 
 ---
 
@@ -47,6 +54,9 @@ Remove-Item test_out.log -ErrorAction SilentlyContinue
 
 If a process crashed abruptly or a build lock was left behind:
 ```powershell
+# 0. Verify the installation and PATH fallback
+just queue-doctor
+
 # 1. Inspect lock status
 just queue-status   # or: bque status
 

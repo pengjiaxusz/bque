@@ -33,7 +33,7 @@ git --no-pager diff --cached --stat
 This step belongs to the **PROJECT**, not the template:
 Follow whatever the project-specific area in `SKILL.md` defines (commands, test suites, checklists). If the project-specific area defines no checks, use the generic fallback:
 - Scan the diff: if it touches build/deps, docs/AGENTS.md/config, or public naming, verify build / update docs / run formatter as appropriate before committing.
-- **Architecture doc consistency check**: If this change touches architecture (new/adjusted module boundaries, data flow, lifecycle, system topology, core invariants, etc.), verify `docs/architecture/README.md` and the corresponding domain docs are in sync; see `.agents/skills/arch-align` for details.
+- **Doc consistency check**: If this change touches module boundaries, public APIs, data flow, lifecycle, or adds a module/subsystem, update the matching architecture/design docs before committing.
 
 Do NOT invent arbitrary checks on the fly; reference the project-specific area.
 
@@ -50,12 +50,13 @@ Separate unrelated areas into distinct commits (e.g., do not mix documentation u
 Format: `type(scope): subject`
 
 
-- **Subject in English** (imperative, short, no trailing period; strictly forbidden to contain Chinese characters).
-  - ❌ Forbidden: `feat(cli): 新增参数支持`
+- **Subject in English** (imperative, short, no trailing period; strictly forbidden to contain non-English/CJK characters).
+  - ❌ Forbidden: `feat(cli): add new flags.` (trailing period or non-English characters)
   - ✅ Correct: `feat(cli): add new flags`
 - **Type/Scope in English**:
   - Types: `feat` `fix` `docs` `style` `refactor` `perf` `test` `build` `ci` `chore` `revert`
   - Scope: from the project's `commitlint.config.js` scope-enum whitelist when present.
+- **Entry points**: host-provided `/commit` commands and hand-written `git commit` must obey the same rule; rewrite auto-generated Chinese subjects before committing.
 
 
 ---

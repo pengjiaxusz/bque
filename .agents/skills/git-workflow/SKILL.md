@@ -32,19 +32,23 @@ See [references/non-interactive.md](references/non-interactive.md) for full conf
 Always push immediately after committing to prevent work loss.
 
 ### 1.1 Trigger Conditions (Mandatory Proactive Triggers)
-- **Code modification & milestone completion (Mandatory barrier — no accumulation)**: Whenever files are modified and verified in the current turn, you MUST run this commit workflow before reporting back to the user or proceeding to the next step. Never leave verified changes sitting in the working directory before yielding control; writing `walkthrough.md` in planning modes (`/plan` / `/boost`) does NOT conclude the task — you must commit and push immediately after.
-- **Task conclusion (Mandatory)**: Before concluding any development/maintenance task or delivering final responses, ensure the working tree is clean and all commits are pushed.
+- **Pre-Response Commit Gate (Mandatory Barrier — No Accumulation)**: Whenever files (code, tests, or docs) are created, modified, or deleted in the current turn and have passed verification (builds/tests pass), **you MUST run the commit workflow (completeness checks, split commits, and `git push`) as the very last tool-calling step BEFORE stopping to output your final response to the user**. Never leave verified changes sitting in the working directory before yielding control; never defer committing until the end of a multi-turn conversation or wait for the user to prompt `/commit`.
+  - **Planning Modes (`/plan` / `/boost`) Enforcement**: In planning modes, creating or updating `walkthrough.md` does NOT conclude the task; **you are strictly forbidden from stopping after writing a walkthrough — you MUST proceed immediately to commit and push before finishing your turn**.
+  - **Exemptions**: Committing is only skipped if the turn is purely conversational (zero file changes in `git status`) or if tests/builds failed and you are stopping specifically to ask the user for diagnostic input.
+- **Task Conclusion**: Before concluding any task or delivering final responses, the working tree must be clean and all commits pushed to the remote repository.
 - **Explicit user instruction**: When user invokes `/commit`, "commit", "commit & push", etc.
 
 ### 1.2 Pre-Commit Completeness Check — Project-Defined
 This step belongs to the **PROJECT**, not the template: follow whatever the project-specific area below the managed block defines (which commands to run, what to verify). If undefined, use the generic fallback (scan diff: verify build / update docs / run format as appropriate).
-If this change touches architecture (new/adjusted module boundaries, data flow, lifecycle, system topology, core invariants, etc.), verify `docs/architecture/README.md` and the corresponding domain docs are in sync; see `.agents/skills/arch-align` for details.
+If this change touches module boundaries, public APIs, data flow, lifecycle, or adds a module/subsystem, update the matching architecture/design docs before committing.
+- **Rust static check**: run `just check` (or `cargo clippy --all-targets --all-features -- -D warnings`, adding `--workspace` for workspaces) and keep warnings at zero before committing.
 
 ### 1.3 Commit Format & Immediate Push
 `git commit -m "<type>(<scope>): <subject>"` followed immediately by `git push`.
 
 - Subject in English (imperative, short, no trailing period; strictly forbidden to contain Chinese characters).
 - Type/scope in English (`feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`).
+- Applies to EVERY commit entry point, including host-provided `/commit` commands and hand-written `git commit`: rewrite any auto-generated Chinese subject before committing.
 
 
 Detailed commit guidelines and semantic splitting: [references/commit.md](references/commit.md).

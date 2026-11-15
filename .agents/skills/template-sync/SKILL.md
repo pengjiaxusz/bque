@@ -3,7 +3,7 @@ name: template-sync
 description: >-
 
   Template synchronization, adoption, and audit workflow for pengj-templates. Automatically diagnoses tech stack, paradigms, and commit habits to recommend tailored profiles when adopting projects (adopt); audits template drifts, script tampering, and managed block violations (audit); updates managed projects from upstream templates (update); resolves review notices (needs_review / conflicted / transition zones).
-  Triggers: template-sync, sync-template, update-template, apply-template, adopt-project, template-audit, template-diff, 模板同步, 更新模板, 应用模板, 纳管项目, 同步模板, 模板巡检, 模板漂移.
+  Triggers: template-sync, sync-template, update-template, apply-template, adopt-project, template-audit, template-diff.
 
 ---
 
@@ -23,8 +23,8 @@ Prefer running the bundled fast-track pipeline script `sync-template.ps1`. It de
 # Fast-track dry-run audit for one or multiple projects
 pwsh .agents/skills/template-sync/scripts/sync-template.ps1 -Projects @("<project-dir-1>", "<project-dir-2>")
 
-# Fast-track one-click batch update with selective staging, commit and push
-pwsh .agents/skills/template-sync/scripts/sync-template.ps1 -Projects @("<project-dir-1>", "<project-dir-2>") -Apply -Commit -Push
+# Fast-track one-click batch update with selective staging, commit and push (default)
+pwsh .agents/skills/template-sync/scripts/sync-template.ps1 -Projects @("<project-dir-1>", "<project-dir-2>") -Apply
 ```
 
 ### Direct CLI Commands
@@ -56,10 +56,10 @@ Check whether the target project has `.pengj-templates.json`:
 
 1. Run the fast-track script or CLI update:
    ```powershell
-   # Recommended: fast-track script
+   # Recommended: fast-track script (commits and pushes the applied project by default)
    pwsh .agents/skills/template-sync/scripts/sync-template.ps1 -Projects @("<project-dir>") -Apply
 
-   # Or via CLI directly
+   # Or via CLI directly (then follow Step 4 to commit the applied project)
    cargo run -p pengj-templates-cli -- update --dir <project-dir> --sync-skills
    ```
 2. The engine reads `.pengj-templates.json` to reuse original options (`edition`, `skills`, `skill_lang`, etc.) and performs baseline-driven sync:
@@ -82,7 +82,7 @@ Inspect the target project workspace across the following dimensions:
   - Editor settings: Recommend `vscode` to inject file nesting patterns (`explorer.fileNesting`); existing `.vscode` configs merge automatically.
   - `common` and `agent` are foundational and core layers for all projects (always required).
 - **Programming Paradigm Detection (`--chinese` Chinese Programming)**:
-  - Check for Chinese directory names (e.g. `源码/`, `配置/`) or prevalent Chinese identifiers (classes, methods, variables).
+  - Check for non-ASCII or Chinese directory names or prevalent non-English/Chinese identifiers (classes, methods, variables).
   - If detected, **strongly recommend `--chinese`** to inject Chinese programming guidelines and bilingual naming anchors.
 - **Commit Conventions & Language Detection (`--commit-zh` / `--commit-and-push`)**:
   - Run `git log -n 5 --oneline` to inspect commit styles.
@@ -141,7 +141,7 @@ Inspect the CLI execution report:
 - **Toolchain / Workspace Wiring**:
   - Verify `commitlint.base.js` wiring, `.vscode/settings.json`, or `.cargo/config.toml` merged as expected.
 
-### 4. Verify & Selective Commit
+### 4. Verify & Auto-Commit the Applied Project
 
 1. Switch to the target project directory and run verification checks matching its stack:
    ```powershell
@@ -150,10 +150,12 @@ Inspect the CLI execution report:
    # e.g., for Frontend
    pnpm build
    ```
-2. **Commit Policy & Selective Staging**:
-   - **No auto-commit by default**: Running `update` or `adopt` only updates the working tree for review. Do NOT automatically commit unless the user explicitly requested it.
-   - **Strict selective commit when requested (Red line)**: When the user explicitly asks to commit, **stage ONLY the files modified or created by this template sync/adoption** (matching the update report paths). NEVER use indiscriminate `git add .` or `git commit -a` which might accidentally sweep in unrelated dirty or pre-existing working tree changes.
-   - Commit message: `chore(templates): sync upstream template updates` or `chore(templates): adopt project layered templates`, then push.
+2. **Auto-commit policy & selective staging (Red line)**:
+   - **Commit by default**: after a successful `update` / `adopt`, the Agent MUST commit the template sync in the **applied project** and push it. Never leave applied template updates sitting uncommitted waiting for the user — this is exactly why template changes used to "never get committed".
+   - **Commit the right repository**: the commit above belongs to the downstream project that was just applied. Changes to the upstream `pengj-templates` repository (template sources, engine, docs) are committed separately in that repository, never mixed in.
+   - **Strict selective staging**: stage ONLY the paths listed in this run's update report (`[Updated]` / `[Added]` plus `.pengj-templates.json`). NEVER `git add .` or `git commit -a`, so pre-existing unrelated or dirty working-tree changes are not swept in.
+   - **Message language follows the target project**: read `options.commit_zh` from the target's `.pengj-templates.json`. When true the subject MUST be written in Chinese (see the target's `commit.md` for examples), when false it MUST be English (e.g. `chore: sync layered template updates`). The commit-msg hook enforces this.
+   - **Opt out** only when the user explicitly asks not to commit: pass `-NoCommit` / `-NoPush` to the fast-track script, or skip Step 4 manually.
 
 <!-- PENGJ_TEMPLATE_END -->
 

@@ -3,7 +3,7 @@ name: bque
 description: >-
 
   Universal cross-worktree build queue serialization, CPU throttling, and clean-room benchmark protection skill. Enforces Idle priority, clean-room benchmark execution (auto-freezing background builds), queue introspection, pipeline hygiene (preventing 4KB anonymous pipe deadlocks on Windows), and deadlock recovery. Use when running builds, cargo, cmake, ninja, pnpm build, tests, benchmarks, profiling, or when encountering CPU contention, hanging commands, or build lock errors.
-  Triggers: bque, build-queue, queue, build queue, run build, cargo build, pnpm build, cmake build, bench, benchmark, profiling, queue-status, queue-clean, compile freeze, cpu throttle, pipeline deadlock.
+  Triggers: bque, build-queue, queue, build queue, run build, cargo build, pnpm build, cmake build, ninja, ninja -C, cmake, ctest, cargo test, cargo clippy, bench, benchmark, profiling, queue-status, queue-clean, compile freeze, cpu throttle, pipeline deadlock.
 
 ---
 
@@ -55,9 +55,17 @@ just build           # Compile under bque queue & Idle priority
 just check           # Check code under bque supervision
 just test            # Run test suite safely
 just bench           # Clean-room benchmark (freezes background builds)
+just q-run cargo build --release   # Ad-hoc heavy command, no `--` separator
+just q-bench pnpm bench           # Ad-hoc benchmark in clean-room mode
 just queue-status    # Inspect current lock holder and waiters
 just queue-clean     # Clean abnormal or abandoned locks
+just queue-doctor    # Verify bque installation, PATH fallback and lock state
 ```
+
+When no matching recipe exists, prefer `just q-run <cmd>` over the native CLI. The `justfile` framework
+lives in a managed block (`# PENGJ_TEMPLATE_START/END`); project-owned recipes stay outside it and survive
+template updates. On Unix and in CI the `[unix]` variants of these recipes pass through without bque —
+that is expected, since bque is a Windows-only global lock; never force a raw `bque` call there.
 
 ### Tier 2: Direct Native `bque` CLI (Custom / Ad-hoc Commands)
 When no matching `just` recipe exists, directly invoke `bque`:
@@ -89,7 +97,8 @@ bque clean
 
 ## 🔧 5. Environment & Installation
 
-If `bque` is missing from system `PATH`, inspect and follow the installation guide:
+Run `just queue-doctor` first: it probes `PATH`, falls back to `$env:LOCALAPPDATA\bque\bin`
+and prints the one-click install command when bque is missing. For the full setup guide:
 👉 See [references/install.md](references/install.md).
 
 

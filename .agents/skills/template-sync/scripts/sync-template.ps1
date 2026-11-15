@@ -1,43 +1,52 @@
 <#
 .SYNOPSIS
-    分层模板同步、批量更新与精准提交流水线 (Template Sync Fast-Track)
+    Layered template sync, batch update, and selective commit pipeline (Template Sync Fast-Track)
 
 .DESCRIPTION
-    自动化执行跨项目或单项目的模板同步、巡检与精准提交流程：
-    1. 毫秒级探测 pengj-templates-cli 可执行文件（优先本地 target 预编译二进制，次选 PATH，兜底 cargo run）；
-    2. 支持批量项目路径（-Projects @(...)）；
-    3. 默认预检模式 (Dry Run)，通过 audit 快速诊断各项目对齐与漂移状态；
-    4. 指定 -Apply 时一键执行更新，默认开启纯受管技能资产对齐 (-SyncSkills)；
-    5. 精准暂存红线守护：严格仅 git add 模板涉及的文件与 manifest，严禁粗暴使用 git add .；
-    6. 可选 -Commit 与 -Push，将多项目同步全流程压缩在单次工具调用内完成。
+    Automates template sync, audit, and selective commit workflow across single or multiple projects:
+    1. Sub-second detection of pengj-templates-cli binary (local target build > PATH > fallback cargo run);
+    2. Batch project directories (-Projects @(...));
+    3. Default dry run mode: rapid diagnosis of alignment and drift states via audit;
+    4. Single-shot update on -Apply with -SyncSkills enabled by default;
+    5. Selective staging red-line enforcement: strictly stages only template-affected files and manifest, never git add .;
+    6. Automatic selective commit and push on -Apply by default (-NoCommit / -NoPush to opt out), so applied projects never leave template updates uncommitted.
 
 .PARAMETER Projects
-    目标项目路径列表。支持多个路径如 @("D:\pengj\repo1", "D:\pengj\repo2")。默认为当前目录 @(".")。
+    List of target project paths. Supports multiple paths e.g. @("D:\repo1", "D:\repo2"). Defaults to @("."). 
 
 .PARAMETER Apply
-    是否实际执行更新操作。未指定时仅进行只读预检诊断 (Audit / Dry Run)。
+    Execute actual update. If omitted, performs read-only pre-flight audit (Dry Run).
 
 .PARAMETER SyncSkills
-    是否将纯受管技能资产与脚本直接对齐覆盖（即使无托管块也不判定为冲突）。默认 $true。
+    Align and overwrite managed skill assets and scripts directly (default $true).
 
 .PARAMETER Commit
-    在 -Apply 更新成功后，是否自动精准暂存并执行 git commit。
+    Kept for compatibility: the selective commit is the DEFAULT on -Apply. Use -NoCommit to disable it.
 
 .PARAMETER Push
-    在 -Commit 提交成功后，是否自动执行 git push。
+    Kept for compatibility: the push is the DEFAULT on -Apply. Use -NoPush to disable it.
+
+.PARAMETER NoCommit
+    Skip the automatic selective commit after -Apply (also skips push).
+
+.PARAMETER NoPush
+    Skip the automatic push but still create the selective commit.
 
 .PARAMETER CommitMessage
-    自定义提交信息。未指定时自动根据约定式提交与项目 commitlint 配置推导（默认: chore(template): 同步分层模板更新）。
+    Custom commit message. If omitted, the language follows the target project's commit_zh option (Chinese or English Conventional Commit subject).
 
 .PARAMETER Diff
-    预检模式下是否展示详细漂移差异 (diff)。
+    Display detailed drift diffs in pre-flight mode.
 
 .EXAMPLE
-    # 1. 快速只读预检多个项目的模板漂移状态（毫秒级）
+    # 1. Rapid read-only pre-flight audit of template drifts
     pwsh .agents/skills/template-sync/scripts/sync-template.ps1 -Projects @("D:\pengj\proj-a", "D:\pengj\proj-b")
 
-    # 2. 一键批量更新并精准提交、推送到远端（1次工具调用全自动完成）
-    pwsh .agents/skills/template-sync/scripts/sync-template.ps1 -Projects @("D:\pengj\proj-a", "D:\pengj\proj-b") -Apply -Commit -Push
+    # 2. Batch update, selective commit, and push in a single tool call (default behavior)
+    pwsh .agents/skills/template-sync/scripts/sync-template.ps1 -Projects @("D:\pengj\proj-a", "D:\pengj\proj-b") -Apply
+
+    # 3. Update without committing (explicit opt-out)
+    pwsh .agents/skills/template-sync/scripts/sync-template.ps1 -Projects @("D:\pengj\proj-a") -Apply -NoCommit
 #>
 
 [CmdletBinding()]
@@ -49,6 +58,8 @@ param(
     [bool]$SyncSkills = $true,
     [switch]$Commit,
     [switch]$Push,
+    [switch]$NoCommit,
+    [switch]$NoPush,
     [string]$CommitMessage = "",
     [switch]$Diff
 )
@@ -56,13 +67,18 @@ param(
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-# 1. 查找或推导 pengj-templates-cli 最佳执行路径（毫秒级启动）
+# -Apply commits and pushes the applied project by default; -NoCommit / -NoPush opt out.
+# -Commit / -Push remain accepted for compatibility with existing command lines.
+$doCommit = -not $NoCommit.IsPresent
+$doPush = $doCommit -and (-not $NoPush.IsPresent)
+
+# 1. Discover or resolve optimal pengj-templates-cli execution path
 function Find-CliCommand {
     if ($env:PENGJ_TEMPLATES_CLI -and (Test-Path $env:PENGJ_TEMPLATES_CLI)) {
         return @{ Type = "bin"; Cmd = $env:PENGJ_TEMPLATES_CLI }
     }
     $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
-    # 向上寻找仓库根目录（探测 Cargo.toml）
+# Walk up to repository root (detect Cargo.toml)
     $curr = $scriptDir
     for ($i = 0; $i -lt 6; $i++) {
         if (Test-Path (Join-Path $curr "Cargo.toml")) {
@@ -162,11 +178,26 @@ function Get-DefaultCommitMessage {
             }
         }
     }
-    if ($scope) {
-        return "chore($scope): 同步分层模板更新"
-    } else {
-        return "chore: 同步分层模板更新"
+    # Commit language axis: follow the applied project's commit_zh, otherwise the
+    # commit-msg hook rejects the generated commit subject.
+    $commitZh = $true
+    $manifestPath = Join-Path $ProjectDir ".pengj-templates.json"
+    if (Test-Path $manifestPath) {
+        try {
+            $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+            if ($null -ne $manifest.options.commit_zh) {
+                $commitZh = [bool]$manifest.options.commit_zh
+            }
+        } catch {
+            Write-Warning "Cannot read commit_zh from manifest, assuming Chinese: $($_.Exception.Message)"
+        }
     }
+
+    # Rendered from the commit_zh axis: an EN-commit project never contains CJK text.
+    $localizedSubject = 'sync layered template updates'
+    if (-not $commitZh) { $localizedSubject = "sync layered template updates" }
+    if ($scope) { return "chore($scope): $localizedSubject" }
+    return "chore: $localizedSubject"
 }
 
 $summaryRows = @()
@@ -185,37 +216,37 @@ if ($targetProjects.Count -eq 0) {
     $targetProjects = @(".")
 }
 
-Write-Host ">>> 使用 CLI 调用模式: $($cliInfo.Type) ($($cliInfo.Cmd))" -ForegroundColor Cyan
+Write-Host ">>> Using CLI invocation mode: $($cliInfo.Type) ($($cliInfo.Cmd))" -ForegroundColor Cyan
 
 foreach ($rawProj in $targetProjects) {
     if (-not (Test-Path $rawProj)) {
-        Write-Warning "项目路径不存在，跳过: $rawProj"
+        Write-Warning "Project path does not exist, skipping: $rawProj"
         continue
     }
     $projDir = (Resolve-Path $rawProj).Path
     $manifestPath = Join-Path $projDir ".pengj-templates.json"
 
     if (-not (Test-Path $manifestPath)) {
-        Write-Warning "项目未纳管（缺失 .pengj-templates.json），跳过: $projDir"
+        Write-Warning "Project unmanaged (missing .pengj-templates.json), skipping: $projDir"
         continue
     }
 
     $projectName = Split-Path -Leaf $projDir
 
-    # ---------------- 模式 1: 预检诊断 (Audit / Dry Run) ----------------
+    # ---------------- Mode 1: Pre-Flight Audit (Dry Run) ----------------
     if (-not $Apply) {
-        Write-Host "`n>>> [预检] 巡检项目: $projectName ($projDir)" -ForegroundColor Cyan
+        Write-Host "`n>>> [Pre-Flight] Auditing project: $projectName ($projDir)" -ForegroundColor Cyan
         $auditArgs = @("audit", "--dir", "`"$projDir`"", "--json")
         $auditRes = Invoke-Cli -CommandArgs $auditArgs
         if ($auditRes.ExitCode -ne 0 -and -not $auditRes.Output) {
-            Write-Error "[$projectName] Audit 失败: $($auditRes.Error)"
+            Write-Error "[$projectName] Audit failed: $($auditRes.Error)"
             continue
         }
 
         try {
             $auditJson = $auditRes.Output | ConvertFrom-Json
         } catch {
-            Write-Error "[$projectName] 解析 Audit JSON 输出失败: $($auditRes.Output)"
+            Write-Error "[$projectName] Failed to parse Audit JSON output: $($auditRes.Output)"
             continue
         }
 
@@ -226,7 +257,7 @@ foreach ($rawProj in $targetProjects) {
 
         if ($auditJson.has_violations) {
             $hasAnyViolations = $true
-            Write-Host "  [警告] 发现违规漂移项: $violations 个！" -ForegroundColor Red
+            Write-Host "  [Warning] Detected $violations violation drifts!" -ForegroundColor Red
         }
 
         if ($Diff) {
@@ -242,13 +273,13 @@ foreach ($rawProj in $targetProjects) {
             Customized    = $customized
             UpstreamNewer = $upstreamNewer
             Violations    = $violations
-            Action        = if ($upstreamNewer -gt 0) { "建议运行 -Apply" } else { "已最新" }
+            Action        = if ($upstreamNewer -gt 0) { "Recommend -Apply" } else { "Up to date" }
         }
         continue
     }
 
-    # ---------------- 模式 2: 执行更新 (-Apply) ----------------
-    Write-Host "`n>>> [应用] 正在同步更新: $projectName ($projDir)" -ForegroundColor Cyan
+    # ---------------- Mode 2: Execute Update (-Apply) ----------------
+    Write-Host "`n>>> [Apply] Synchronizing updates: $projectName ($projDir)" -ForegroundColor Cyan
     $updateArgs = @("update", "--dir", "`"$projDir`"")
     if ($SyncSkills) {
         $updateArgs += "--sync-skills"
@@ -256,32 +287,32 @@ foreach ($rawProj in $targetProjects) {
 
     $updateRes = Invoke-Cli -CommandArgs $updateArgs
     if ($updateRes.ExitCode -ne 0) {
-        Write-Error "[$projectName] 更新失败: $($updateRes.Error) $($updateRes.Output)"
+        Write-Error "[$projectName] Update failed: $($updateRes.Error) $($updateRes.Output)"
         continue
     }
 
     Write-Host $updateRes.Output
 
-    # 解析更新涉及的文件列表
+    # Parse files affected by update
     $updatedFiles = @()
     $createdFiles = @()
     $conflictedFiles = @()
     $needsReviewFiles = @()
 
     foreach ($line in ($updateRes.Output -split "`r?`n")) {
-        if ($line -match '^\s*\[更新\]\s+(.+)$') {
+        if ($line -match '^\s*\[(?:\u66f4\u65b0|Updated?)\]\s+(.+)$') {
             $updatedFiles += $matches[1].Trim()
-        } elseif ($line -match '^\s*\[新增\]\s+(.+)$') {
+        } elseif ($line -match '^\s*\[(?:\u65b0\u589e|Added?)\]\s+(.+)$') {
             $createdFiles += $matches[1].Trim()
-        } elseif ($line -match '^\s*\[冲突\]\s+(.+)$') {
+        } elseif ($line -match '^\s*\[(?:\u51b2\u7a81|Conflicted?)\]\s+(.+)$') {
             $conflictedFiles += $matches[1].Trim()
-        } elseif ($line -match '^\s*\[待复核\]\s+(.+)$') {
+        } elseif ($line -match '^\s*\[(?:\u5f85\u590d\u6838|NeedsReview)\]\s+(.+)$') {
             $needsReviewFiles += $matches[1].Trim()
         }
     }
 
     $stagedFiles = @()
-    # 精准暂存红线：仅针对受本次更新影响的文件与 manifest 运行 git add
+    # Selective staging red line: only git add files modified by update and manifest
     $candidateFiles = @($updatedFiles + $createdFiles + @(".pengj-templates.json")) | Select-Object -Unique
     foreach ($rel in $candidateFiles) {
         $fullPath = Join-Path $projDir $rel
@@ -290,39 +321,39 @@ foreach ($rawProj in $targetProjects) {
             if ($addRes.ExitCode -eq 0) {
                 $stagedFiles += $rel
             } else {
-                Write-Warning "[$projectName] 暂存文件失败: $rel - $($addRes.Error)"
+                Write-Warning "[$projectName] Staging file failed: $rel - $($addRes.Error)"
             }
         }
     }
 
-    $commitStatus = "跳过提交"
-    $pushStatus = "跳过推送"
+    $commitStatus = "Skipped Commit"
+    $pushStatus = "Skipped Push"
 
-    if ($Commit) {
+    if ($doCommit) {
         $cachedDiff = Invoke-Git -WorkingDir $projDir -CommandArgs @("diff", "--cached", "--name-only")
         if ($cachedDiff.Output) {
             $msg = if ($CommitMessage) { $CommitMessage } else { Get-DefaultCommitMessage -ProjectDir $projDir }
-            Write-Host "  -> 精准提交改动: $msg" -ForegroundColor Yellow
+            Write-Host "  -> Selectively committing changes: $msg" -ForegroundColor Yellow
             $cRes = Invoke-Git -WorkingDir $projDir -CommandArgs @("commit", "-m", "`"$msg`"")
             if ($cRes.ExitCode -ne 0) {
-                Write-Error "[$projectName] git commit 失败: $($cRes.Error) $($cRes.Output)"
-                $commitStatus = "提交失败"
+                Write-Error "[$projectName] git commit failed: $($cRes.Error) $($cRes.Output)"
+                $commitStatus = "Commit Failed"
             } else {
-                $commitStatus = "已提交"
-                if ($Push) {
-                    Write-Host "  -> 推送到远端仓库..." -ForegroundColor Yellow
+                $commitStatus = "Committed"
+                if ($doPush) {
+                    Write-Host "  -> Pushing to remote repository..." -ForegroundColor Yellow
                     $pRes = Invoke-Git -WorkingDir $projDir -CommandArgs @("push")
                     if ($pRes.ExitCode -ne 0) {
-                        Write-Error "[$projectName] git push 失败: $($pRes.Error) $($pRes.Output)"
-                        $pushStatus = "推送失败"
+                        Write-Error "[$projectName] git push failed: $($pRes.Error) $($pRes.Output)"
+                        $pushStatus = "Push Failed"
                     } else {
-                        $pushStatus = "已推送"
+                        $pushStatus = "Pushed"
                     }
                 }
             }
         } else {
-            $commitStatus = "无暂存变更"
-            $pushStatus = "无变更"
+            $commitStatus = "No staged changes"
+            $pushStatus = "No changes"
         }
     }
 
@@ -338,9 +369,9 @@ foreach ($rawProj in $targetProjects) {
     }
 }
 
-Write-Host "`n========================= 执行结果汇总 =========================" -ForegroundColor Green
+Write-Host "`n========================= Execution Summary =========================" -ForegroundColor Green
 $summaryRows | Format-Table -AutoSize
 
 if ($hasAnyViolations) {
-    Write-Host "[提示] 存在违规篡改项，请遵循规范修复或上报模板通用化！`n" -ForegroundColor Yellow
+    Write-Host "[Notice] Violation drifts detected; follow standards to resolve or report upstream!`n" -ForegroundColor Yellow
 }

@@ -1,24 +1,24 @@
 <#
 .SYNOPSIS
-    分支同步安全快照管理工具 (Manage Sync Backups)
+    Branch sync safety backup management tool (Manage Sync Backups)
 
 .DESCRIPTION
-    查看、还原或清理 branch-sync 产生的 refs/sync-backup/* 本地持久化快照指针。
+    Inspect, restore, or clean refs/sync-backup/* persistent backup refs created by branch-sync.
 
 .PARAMETER List
-    列出所有现存的安全快照。
+    List all existing safety backups.
 
 .PARAMETER RestoreBranch
-    要恢复的目标分支名。
+    Target branch name to restore.
 
 .PARAMETER BackupRef
-    要恢复到的快照引用 (如 refs/sync-backup/dev/20261007-120000-xxxx)。
+    Backup ref to restore to (e.g. refs/sync-backup/dev/20261007-120000-xxxx).
 
 .PARAMETER Clean
-    清理过期的安全快照。
+    Clean expired safety backups.
 
 .PARAMETER OlderThanDays
-    清理多少天前的快照（默认 7 天；设为 0 清理全部）。
+    Clean backups older than specified days (default 7; 0 to clean all).
 #>
 
 [CmdletBinding()]
@@ -61,7 +61,7 @@ function Invoke-Git {
         $pinfo.WorkingDirectory = $WorkingDir
     }
 
-    # 防交互与外部编辑器挂死：禁用交互式凭据提示与外部编辑器弹窗
+    # Non-interactive guard: disable interactive credential prompts and external editor popups
     $isWin = [System.Environment]::OSVersion.Platform -like "*Win*" -or $IsWindows
     $pinfo.Environment["GIT_TERMINAL_PROMPT"] = "0"
     $pinfo.Environment["GIT_OPTIONAL_LOCKS"] = "0"
@@ -89,7 +89,7 @@ function Invoke-Git {
             try { $process.Kill() } catch {}
         }
         $cmdStr = "git " + (($CommandArgs | ForEach-Object { Format-GitArg $_ }) -join " ")
-        throw "Git 命令执行超时（超过 $($TimeoutSeconds)s）已被强制终止：$cmdStr"
+        throw "Git command timed out (exceeded $($TimeoutSeconds)s) and was terminated: $cmdStr"
     }
 
     $process.WaitForExit()
@@ -103,14 +103,14 @@ function Invoke-Git {
 }
 
 if (-not [string]::IsNullOrWhiteSpace($RestoreBranch) -and -not [string]::IsNullOrWhiteSpace($BackupRef)) {
-    Write-Host ">> 正在从安全快照恢复分支 '$RestoreBranch'..." -ForegroundColor Cyan
+    Write-Host ">> Restoring branch '$RestoreBranch' from safety backup..." -ForegroundColor Cyan
     $chk = Invoke-Git @("rev-parse", "--verify", $BackupRef)
     if ($chk.ExitCode -ne 0) {
-        throw "指定的快照引用不存在: $BackupRef"
+        throw "Specified backup reference does not exist: $BackupRef"
     }
     $targetSha = $chk.Output
 
-    # 检查是否被 worktree 占用
+    # Check if occupied by a worktree
     $wtList = Invoke-Git @("worktree", "list", "--porcelain")
     $wtPath = $null
     if ($wtList.ExitCode -eq 0) {
@@ -130,19 +130,19 @@ if (-not [string]::IsNullOrWhiteSpace($RestoreBranch) -and -not [string]::IsNull
     }
 
     if ($wtPath) {
-        Write-Host "分支处于 Worktree 中 ($wtPath)，执行 worktree reset..." -ForegroundColor DarkGray
+        Write-Host "Branch is checked out in Worktree ($wtPath), performing worktree reset..." -ForegroundColor DarkGray
         $r = Invoke-Git @("-C", $wtPath, "reset", "--hard", $targetSha)
-        if ($r.ExitCode -ne 0) { throw "重置失败: $($r.Error)" }
+        if ($r.ExitCode -ne 0) { throw "Reset failed: $($r.Error)" }
     } else {
         $r = Invoke-Git @("branch", "-f", $RestoreBranch, $targetSha)
-        if ($r.ExitCode -ne 0) { throw "更新分支指针失败: $($r.Error)" }
+        if ($r.ExitCode -ne 0) { throw "Updating branch pointer failed: $($r.Error)" }
     }
-    Write-Host "✅ 分支 '$RestoreBranch' 已成功还原至快照 $BackupRef ($targetSha)" -ForegroundColor Green
+    Write-Host "✅ Branch '$RestoreBranch' successfully restored to backup $BackupRef ($targetSha)" -ForegroundColor Green
     return
 }
 
 if ($Clean) {
-    Write-Host ">> 正在清理过期的安全快照 (早于 $OlderThanDays 天)..." -ForegroundColor Cyan
+    Write-Host ">> Cleaning expired safety backups (older than $OlderThanDays days)..." -ForegroundColor Cyan
     $allBackups = Invoke-Git @("for-each-ref", "--format=%(refname)|%(committerdate:unix)", "refs/sync-backup/")
     $nowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     $cutoff = $nowEpoch - ($OlderThanDays * 86400)
@@ -161,20 +161,20 @@ if ($Clean) {
             }
         }
     }
-    Write-Host "✅ 已清理 $deletedCount 个过期快照。" -ForegroundColor Green
+    Write-Host "✅ Cleaned $deletedCount expired backups." -ForegroundColor Green
     return
 }
 
-# 默认模式：列出所有快照
+# Default mode: list all backups
 Write-Host ""
-Write-Host "===================== refs/sync-backup/ 快照清单 =====================" -ForegroundColor Cyan
+Write-Host "===================== refs/sync-backup/ Inventory =====================" -ForegroundColor Cyan
 $backups = Invoke-Git @("for-each-ref", "--sort=-committerdate", "--format=%(refname)|%(objectname:short)|%(committerdate:iso8601)|%(subject)", "refs/sync-backup/")
 
 if ($backups.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($backups.Output)) {
-    Write-Host "当前无任何安全快照记录。" -ForegroundColor Yellow
+    Write-Host "No safety backup records found." -ForegroundColor Yellow
 } else {
     $fmt = "{0,-42} {1,-10} {2,-20} {3}"
-    Write-Host ([string]::Format($fmt, "快照引用 (Ref)", "SHA", "创建时间", "提交标题")) -ForegroundColor DarkGray
+    Write-Host ([string]::Format($fmt, "Backup Ref", "SHA", "Created At", "Subject")) -ForegroundColor DarkGray
     Write-Host ("-" * 86) -ForegroundColor DarkGray
     foreach ($line in ($backups.Output -split "`r?`n")) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
@@ -187,7 +187,7 @@ if ($backups.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($backups.Output)) {
     }
 }
 Write-Host "----------------------------------------------------------------------"
-Write-Host "还原命令示例:" -ForegroundColor DarkGray
+Write-Host "Restore example:" -ForegroundColor DarkGray
 Write-Host "  pwsh .agents/skills/git-workflow/scripts/manage-sync-backups.ps1 -RestoreBranch 'dev' -BackupRef 'refs/sync-backup/...' " -ForegroundColor White
 Write-Host "======================================================================" -ForegroundColor Cyan
 Write-Host ""

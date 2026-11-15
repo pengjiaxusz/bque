@@ -142,4 +142,5 @@ After drafting, verify:
 - Four independent language axes: `chinese_programming` (identifiers in the *target project's* code), `skill_lang` (documentation language), `commit_zh` (commit message language), and skill scripts (always English, no option).
 - Copy the structure of the `commit` skill for new skills; when adding a language, extend the `skill_lang` validation in CLI / GUI / core.
 - `SKILL.md` = managed framework block (`PENGJ_TEMPLATE_START/END`, replaced in place on `update`) + project-specific area **outside** the block (never overwritten). Document-style customization and commit-gate definitions live outside the block; executable gate form is project-defined.
+- Never edit managed blocks or `.agents/skills/*/scripts/` directly — both belong to `pengj-templates`. Put project-specific config outside the block; check alignment anytime with `cargo run -p pengj-templates-cli -- audit --dir . --diff`.
 

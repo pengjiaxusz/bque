@@ -19,7 +19,6 @@
 
 ### Enabled skills
 
-- `arch-align` — see `.agents/skills/arch-align/SKILL.md`
 - `bque` — see `.agents/skills/bque/SKILL.md`
 - `caveman` — see `.agents/skills/caveman/SKILL.md`
 - `git-workflow` — see `.agents/skills/git-workflow/SKILL.md`
@@ -28,6 +27,7 @@
 - `subrepo-sync` — see `.agents/skills/subrepo-sync/SKILL.md`
 - `template-sync` — see `.agents/skills/template-sync/SKILL.md`
 - `write-a-skill` — see `.agents/skills/write-a-skill/SKILL.md`
+- `write-docs` — see `.agents/skills/write-docs/SKILL.md`
 
 ### Skill extension convention
 

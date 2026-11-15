@@ -2,7 +2,7 @@
 name: subrepo-sync
 description: >-
 
-  Universal sub-repository / submodule synchronization, commit impact analysis, and adaptation workflow. Extract unapplied commits between baseline and target, cluster changes by semantic Conventional Commits and domain subsystems (motion, tokens, styles, components, breaking changes), safe checkout/update, guide host refactoring and replacement of handwritten wheels, and enforce host verification gates. Use when updating Git submodules, CMake FetchContent dependencies, embedded sub-repos, or syncing downstream repos with subrepo changes. Triggers: subrepo-sync, submodule-sync, subrepo, submodule, update-subrepo, upgrade-subrepo, sync-submodule, 升级子仓库, 同步子仓库, 子模块升级, 子仓库升级.
+  Universal sub-repository / submodule synchronization, commit impact analysis, and adaptation workflow. Extract unapplied commits between baseline and target, cluster changes by semantic Conventional Commits and domain subsystems (motion, tokens, styles, components, breaking changes), safe checkout/update, guide host refactoring and replacement of handwritten wheels, and enforce host verification gates. Use when updating Git submodules, CMake FetchContent dependencies, embedded sub-repos, or syncing downstream repos with subrepo changes. Triggers: subrepo-sync, submodule-sync, subrepo, submodule, update-subrepo, upgrade-subrepo, sync-submodule.
 
 ---
 

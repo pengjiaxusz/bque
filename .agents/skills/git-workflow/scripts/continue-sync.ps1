@@ -1,36 +1,36 @@
 <#
 .SYNOPSIS
-    分支同步冲突恢复与继续执行工具 (Continue Sync)
+    Branch sync conflict recovery and continuation tool (Continue Sync)
 
 .DESCRIPTION
-    在 sync-branch.ps1 执行过程中若遇到 cherry-pick 冲突，在开发者/Agent 修复冲突文件并 git add 后，
-    通过本脚本 1-Shot 恢复执行：
-    1. 自动继续 cherry-pick；
-    2. 继续应用队列中剩余的净提交；
-    3. 执行 Tree-Diff Guard 树级防漏保全审计；
-    4. 推送集成分支；
-    5. 批量对齐所有分支与 Worktree 并 safe push (--force-with-lease)；
-    6. 执行合后项目门禁验证；
-    7. 输出 COMPLETED_READY_TO_REPORT 交付看板。
-    亦支持 -Abort 彻底回滚并恢复现场。
+    When cherry-pick conflicts occur during sync-branch.ps1 execution, after the developer/agent resolves conflict files and runs git add,
+    this script resumes in 1-Shot:
+    1. Continue cherry-pick;
+    2. Continue applying remaining net commits in queue;
+    3. Execute Tree-Diff Guard audit;
+    4. Push integration branch;
+    5. Batch align all branches and worktrees and safe push (--force-with-lease);
+    6. Execute post-merge verification gates;
+    7. Output COMPLETED_READY_TO_REPORT delivery dashboard.
+    Also supports -Abort for complete rollback and clean recovery.
 
 .PARAMETER Continue
-    解决冲突后继续执行剩余同步流程。
+    Resume remaining sync workflow after resolving conflicts.
 
 .PARAMETER Skip
-    跳过当前中断的提交（例如当当前提交的改动已被等价合入或冲突解决后变为空提交时），并继续执行剩余队列。
+    Skip current interrupted commit (e.g. when changes are already equivalently landed or commit becomes empty), and continue with remaining queue.
 
 .PARAMETER Abort
-    中止同步，恢复集成分支到合入前快照，清理同步状态。
+    Abort sync, restore integration branch to pre-sync backup, and clean state.
 
 .PARAMETER Status
-    查看当前冲突与同步队列状态。
+    Inspect current conflict and queue status.
 
 .PARAMETER NoPush
-    跳过推送。
+    Skip remote push.
 
 .PARAMETER NoVerify
-    跳过合后项目验证。
+    Skip post-merge project verification gates.
 #>
 
 [CmdletBinding()]
@@ -73,7 +73,7 @@ function Invoke-Git {
         $pinfo.WorkingDirectory = $WorkingDir
     }
 
-    # 防交互与外部编辑器挂死：禁用交互式凭据提示与外部编辑器弹窗
+    # Non-interactive guard: disable interactive credential prompts and external editor popups
     $isWin = [System.Environment]::OSVersion.Platform -like "*Win*" -or $IsWindows
     $pinfo.Environment["GIT_TERMINAL_PROMPT"] = "0"
     $pinfo.Environment["GIT_OPTIONAL_LOCKS"] = "0"
@@ -101,7 +101,7 @@ function Invoke-Git {
             try { $process.Kill() } catch {}
         }
         $cmdStr = "git " + (($CommandArgs | ForEach-Object { Format-GitArg $_ }) -join " ")
-        throw "Git 命令执行超时（超过 $($TimeoutSeconds)s）已被强制终止：$cmdStr"
+        throw "Git command timed out (exceeded $($TimeoutSeconds)s) and was terminated: $cmdStr"
     }
 
     $process.WaitForExit()
@@ -114,18 +114,18 @@ function Invoke-Git {
     }
 }
 
-
 function Get-RemoteNames {
+    $remotes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $res = Invoke-Git @("remote")
-    $names = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     if ($res.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($res.Output))) {
         foreach ($line in ($res.Output -split "`r?`n")) {
-            $t = $line.Trim()
-            if (-not [string]::IsNullOrWhiteSpace($t)) { $names.Add($t) | Out-Null }
+            $r = $line.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($r)) {
+                $remotes.Add($r) | Out-Null
+            }
         }
     }
-    if ($names.Count -eq 0) { $names.Add("origin") | Out-Null }
-    return $names
+    return $remotes
 }
 
 function Test-ValidBranchName {
@@ -172,10 +172,10 @@ function Test-ValidBranchName {
 
     return $true
 }
+
 function Get-WorktreeMap {
     $wtList = Invoke-Git @("worktree", "list", "--porcelain")
     $map = @{}
-    $allPaths = [System.Collections.Generic.List[string]]::new()
     if ($wtList.ExitCode -eq 0) {
         $lines = $wtList.Output -split "`r?`n"
         $currentPath = ""
@@ -183,7 +183,6 @@ function Get-WorktreeMap {
             if ($line.StartsWith("worktree ")) {
                 $currentPath = $line.Substring(9).Trim()
                 try { $currentPath = (Resolve-Path $currentPath).Path } catch {}
-                $allPaths.Add($currentPath)
             } elseif ($line.StartsWith("branch refs/heads/")) {
                 $bName = $line.Substring(18).Trim()
                 if ($currentPath -and $bName) {
@@ -196,14 +195,13 @@ function Get-WorktreeMap {
     }
     return [PSCustomObject]@{
         BranchToPath = $map
-        AllPaths     = $allPaths
     }
 }
 
 function Test-ContentPreserved {
-    # 逐提交内容校验（见 REFERENCE 四）：比较源提交与其落地提交的文件级增删行，
-    # 剥掉补丁头（diff --git / index / --- / +++ / @@）与行首 +/- 符号并 Trim 后，
-    # 校验新增内容（或纯删除提交的删除行）在落地提交中的保全度（>=80% 即判定通过，容许微调或消解上下文）。
+    # Per-commit content preservation check (see REFERENCE IV): compare added/removed lines,
+    # stripping patch headers (diff --git / index / --- / +++ / @@) and leading +/- symbols,
+    # verifying that added content (or removed lines for pure deletions) is >= 80% preserved in the landed commit.
     param(
         [string]$SourceHash,
         [string]$LandedHash
@@ -225,89 +223,58 @@ function Test-ContentPreserved {
             }
         }
     }
-    $srcAddedCount = 0
-    $srcAddedMatched = 0
-    $currentFile = ""
+
+    $srcAdded = [System.Collections.Generic.List[string]]::new()
+    $srcRemoved = [System.Collections.Generic.List[string]]::new()
     foreach ($ln in ($srcRes.Output -split "`r?`n")) {
-        if ($ln -match "^diff --git a/.*? b/(.*)$") {
-            $currentFile = $Matches[1].Trim()
-            continue
-        }
-        if ($ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
+        if ($ln.StartsWith("diff --git") -or $ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
             continue
         }
         if ($ln.StartsWith("+")) {
             $t = $ln.Substring(1).Trim()
-            if ([string]::IsNullOrWhiteSpace($t)) {
-                continue
-            }
-            $srcAddedCount++
-            if ($landedSet.Contains($t)) {
-                $srcAddedMatched++
-            } elseif (-not [string]::IsNullOrWhiteSpace($currentFile)) {
-                $needle = if ($t.Length -gt 512) { $t.Substring(0, 512) } else { $t }
-                $checkPre = Invoke-Git @("grep", "-F", "-q", "-e", $needle, $LandedHash, "--", $currentFile)
-                if ($checkPre.ExitCode -eq 0) {
-                    $srcAddedMatched++
-                }
-            }
+            if (-not [string]::IsNullOrWhiteSpace($t)) { $srcAdded.Add($t) }
+        } elseif ($ln.StartsWith("-")) {
+            $t = $ln.Substring(1).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($t)) { $srcRemoved.Add($t) }
         }
     }
-    if ($srcAddedCount -eq 0) {
-        $delCount = 0
-        $delMatched = 0
-        $currentFile = ""
-        foreach ($ln in ($srcRes.Output -split "`r?`n")) {
-            if ($ln -match "^diff --git a/.*? b/(.*)$") {
-                $currentFile = $Matches[1].Trim()
-                continue
-            }
-            if ($ln.StartsWith("index ") -or $ln.StartsWith("---") -or $ln.StartsWith("+++") -or $ln.StartsWith("@@")) {
-                continue
-            }
-            if ($ln.StartsWith("-")) {
-                $t = $ln.Substring(1).Trim()
-                if (-not [string]::IsNullOrWhiteSpace($t)) {
-                    $delCount++
-                    if ($landedSet.Contains($t)) {
-                        $delMatched++
-                    } elseif (-not [string]::IsNullOrWhiteSpace($currentFile)) {
-                        $needle = if ($t.Length -gt 512) { $t.Substring(0, 512) } else { $t }
-                        $checkPre = Invoke-Git @("grep", "-F", "-q", "-e", $needle, $LandedHash, "--", $currentFile)
-                        if ($checkPre.ExitCode -ne 0) {
-                            $delMatched++
-                        }
-                    }
-                }
-            }
-        }
-        if ($delCount -eq 0) { return $true }
-        return ($delMatched / $delCount) -ge 0.8
+
+    $checkList = if ($srcAdded.Count -gt 0) { $srcAdded } else { $srcRemoved }
+    if ($checkList.Count -eq 0) {
+        return $true
     }
-    return ($srcAddedMatched / $srcAddedCount) -ge 0.8
+
+    $hit = 0
+    foreach ($line in $checkList) {
+        if ($landedSet.Contains($line)) {
+            $hit++
+        }
+    }
+    $ratio = [double]$hit / [double]$checkList.Count
+    return ($ratio -ge 0.8)
 }
 
-# 查找状态文件
+# Locate state file
 $gitDirRes = Invoke-Git @("rev-parse", "--git-dir")
 if ($gitDirRes.ExitCode -ne 0) {
-    throw "未在 Git 仓库内执行。"
+    throw "Not executing inside a Git repository."
 }
 $gitDir = $gitDirRes.Output
 try { $gitDir = (Resolve-Path $gitDir).Path } catch {}
 $stateFilePath = Join-Path $gitDir "branch-sync-state.json"
 
 if (-not (Test-Path $stateFilePath)) {
-    # 检查是否有未完成的 cherry-pick
+    # Check if there is an unfinished cherry-pick
     $cpHead = Join-Path $gitDir "CHERRY_PICK_HEAD"
     if (Test-Path $cpHead) {
         if ($Abort) {
             Invoke-Git @("cherry-pick", "--abort") | Out-Null
-            Write-Host "✅ 已中止进行中的 cherry-pick 操作。" -ForegroundColor Green
+            Write-Host "✅ Cherry-pick operation aborted." -ForegroundColor Green
             return
         }
-        throw "检测到有未完成的 cherry-pick，但未找到 branch-sync-state.json 同步状态记录。"
+        throw "Detected unfinished cherry-pick, but branch-sync-state.json state record was not found."
     }
-    Write-Host "ℹ️ 当前没有进行中或被冲突中断的分支同步任务。" -ForegroundColor Yellow
+    Write-Host "ℹ️ No branch sync task is currently in progress or interrupted." -ForegroundColor Yellow
     return
 }
 
@@ -324,39 +291,39 @@ $skipPush = [bool]$state.NoPush -or $NoPush
 
 if ($Status -or (-not $Continue -and -not $Skip -and -not $Abort)) {
     Write-Host ""
-    Write-Host "================== 分支同步中断状态 ==================" -ForegroundColor Cyan
-    Write-Host "集成分支:       $integBranch"
-    Write-Host "当前中断提交:   $($orderedCommits[$currentIndex].Hash) - $($orderedCommits[$currentIndex].Subject)" -ForegroundColor Yellow
-    Write-Host "剩余队列提交数: $($orderedCommits.Count - $currentIndex)"
+    Write-Host "================== Branch Sync Interrupted State ==================" -ForegroundColor Cyan
+    Write-Host "Integration branch:       $integBranch"
+    Write-Host "Current interrupted commit: $($orderedCommits[$currentIndex].Hash) - $($orderedCommits[$currentIndex].Subject)" -ForegroundColor Yellow
+    Write-Host "Remaining commits in queue: $($orderedCommits.Count - $currentIndex)"
     
     $unmerged = Invoke-Git @("diff", "--name-only", "--diff-filter=U")
     if (-not [string]::IsNullOrWhiteSpace($unmerged.Output)) {
-        Write-Host "未解决冲突文件:" -ForegroundColor Red
+        Write-Host "Unresolved conflict files:" -ForegroundColor Red
         foreach ($uf in ($unmerged.Output -split "`r?`n")) {
             Write-Host "  ! $uf" -ForegroundColor Red
         }
     } else {
-        Write-Host "冲突文件状态:   已暂存 (无未解决标记)" -ForegroundColor Green
+        Write-Host "Conflict file status:       Staged (no unresolved conflict markers)" -ForegroundColor Green
     }
-    Write-Host "------------------------------------------------------"
-    Write-Host "操作指引:" -ForegroundColor Cyan
-    Write-Host "  解决冲突后继续: pwsh .agents/skills/git-workflow/scripts/continue-sync.ps1 -Continue" -ForegroundColor White
-    Write-Host "  跳过当前提交:   pwsh .agents/skills/git-workflow/scripts/continue-sync.ps1 -Skip" -ForegroundColor White
-    Write-Host "  中止安全回滚:   pwsh .agents/skills/git-workflow/scripts/continue-sync.ps1 -Abort" -ForegroundColor White
-    Write-Host "======================================================" -ForegroundColor Cyan
+    Write-Host "-------------------------------------------------------------------"
+    Write-Host "Instructions:" -ForegroundColor Cyan
+    Write-Host "  Resume after resolving:  pwsh .agents/skills/git-workflow/scripts/continue-sync.ps1 -Continue" -ForegroundColor White
+    Write-Host "  Skip current commit:     pwsh .agents/skills/git-workflow/scripts/continue-sync.ps1 -Skip" -ForegroundColor White
+    Write-Host "  Abort and safe rollback: pwsh .agents/skills/git-workflow/scripts/continue-sync.ps1 -Abort" -ForegroundColor White
+    Write-Host "===================================================================" -ForegroundColor Cyan
     Write-Host ""
     return
 }
 
 if ($Abort) {
-    Write-Host ">> 正在中止同步并恢复集成分支..." -ForegroundColor Yellow
+    Write-Host ">> Aborting sync and restoring integration branch..." -ForegroundColor Yellow
     Invoke-Git @("cherry-pick", "--abort") | Out-Null
     if (-not [string]::IsNullOrWhiteSpace($backupIntegRef)) {
         Invoke-Git @("reset", "--hard", $backupIntegRef) | Out-Null
-        Write-Host "🛡️ 集成分支已恢复至合前快照: $backupIntegRef" -ForegroundColor Green
+        Write-Host "🛡️ Integration branch restored to pre-sync backup: $backupIntegRef" -ForegroundColor Green
     }
     Remove-Item -Path $stateFilePath -Force -ErrorAction SilentlyContinue
-    Write-Host "✅ 分支同步已安全中止，现场已完全恢复。" -ForegroundColor Green
+    Write-Host "✅ Branch sync safely aborted. Working state fully restored." -ForegroundColor Green
     return
 }
 
@@ -368,91 +335,89 @@ if ($Continue -or $Skip) {
     $inCherryPick = (Test-Path (Join-Path $gitDir "CHERRY_PICK_HEAD"))
 
     if ($Skip) {
-        Write-Host ">> 正在跳过当前提交 [$($currentIndex + 1)/$($orderedCommits.Count)]: $($orderedCommits[$currentIndex].Hash) - $($orderedCommits[$currentIndex].Subject)..." -ForegroundColor Yellow
+        Write-Host ">> Skipping current commit [$($currentIndex + 1)/$($orderedCommits.Count)]: $($orderedCommits[$currentIndex].Hash) - $($orderedCommits[$currentIndex].Subject)..." -ForegroundColor Yellow
         if ($inCherryPick) {
             $skipRes = Invoke-Git @("cherry-pick", "--skip")
             if ($skipRes.ExitCode -ne 0) {
-                # 若 cherry-pick --skip 报错但工作区干净且 CHERRY_PICK_HEAD 消失，仍可继续
                 $inCherryPick = (Test-Path (Join-Path $gitDir "CHERRY_PICK_HEAD"))
                 if ($inCherryPick) {
-                    throw "git cherry-pick --skip 执行失败: $($skipRes.Error)"
+                    throw "git cherry-pick --skip failed: $($skipRes.Error)"
                 }
             }
         }
         $state.CurrentCommitIndex = $currentIndex
         [System.IO.File]::WriteAllText($stateFilePath, (ConvertTo-Json $state -Depth 10), [System.Text.Encoding]::UTF8)
-        Write-Host "⏭️ 已成功跳过提交 $($orderedCommits[$currentIndex].Hash)。" -ForegroundColor Yellow
+        Write-Host "⏭️ Successfully skipped commit $($orderedCommits[$currentIndex].Hash)." -ForegroundColor Yellow
     } else {
-        # 检查冲突文件
+        # Check conflict files
         $unmerged = Invoke-Git @("diff", "--name-only", "--diff-filter=U")
         if (-not [string]::IsNullOrWhiteSpace($unmerged.Output)) {
-            throw "仍有冲突文件未解决！请先在以下文件中解决冲突并执行 git add 后再继续：`n$($unmerged.Output)"
+            throw "Unresolved conflict files remaining! Please resolve conflicts in the following files and run git add before continuing:`n$($unmerged.Output)"
         }
 
-        Write-Host ">> 1. 检查并继续当前 cherry-pick 提交..." -ForegroundColor Cyan
+        Write-Host ">> 1. Verifying and continuing current cherry-pick commit..." -ForegroundColor Cyan
         if ($inCherryPick) {
             $contRes = Invoke-Git @("-c", "core.editor=$editorCmd", "cherry-pick", "--continue", "--no-edit")
             if ($contRes.ExitCode -ne 0) {
-                throw "git cherry-pick --continue 执行失败: $($contRes.Error)"
+                throw "git cherry-pick --continue failed: $($contRes.Error)"
             }
-            Write-Host "✅ 当前提交合入成功！" -ForegroundColor Green
+            Write-Host "✅ Current commit landed successfully!" -ForegroundColor Green
         } else {
             $lastLog = (Invoke-Git @("log", "-1", "--format=%s")).Output
             $targetSubj = $orderedCommits[$currentIndex].Subject
             if ($lastLog -match [regex]::Escape($targetSubj)) {
-                Write-Host "ℹ️ 检测到当前提交已在外部完成合入 ($targetSubj)，自动推进至后续队列。" -ForegroundColor Green
+                Write-Host "ℹ️ Detected current commit already landed externally ($targetSubj); advancing to remaining queue." -ForegroundColor Green
             } else {
-                Write-Host "ℹ️ 当前无进行中的 cherry-pick 操作，继续后续队列检查。" -ForegroundColor Yellow
+                Write-Host "ℹ️ No active cherry-pick in progress; checking remaining queue." -ForegroundColor Yellow
             }
         }
     }
 
-    # 继续处理后续提交
+    # Process remaining commits in queue
     $nextIndex = $currentIndex + 1
     while ($nextIndex -lt $orderedCommits.Count) {
         $c = $orderedCommits[$nextIndex]
-        Write-Host ">> 应用剩余提交 [$($nextIndex + 1)/$($orderedCommits.Count)]: $($c.Hash.Substring(0, [Math]::Min(7, $c.Hash.Length))) $($c.Subject)..." -ForegroundColor DarkGray
+        Write-Host ">> Applying remaining commit [$($nextIndex + 1)/$($orderedCommits.Count)]: $($c.Hash.Substring(0, [Math]::Min(7, $c.Hash.Length))) $($c.Subject)..." -ForegroundColor DarkGray
         
         $cp = Invoke-Git @("-c", "core.editor=$editorCmd", "cherry-pick", $c.FullHash)
         if ($cp.ExitCode -ne 0) {
             $uCheck = Invoke-Git @("diff", "--name-only", "--diff-filter=U")
             $uOut = if ($null -ne $uCheck.Output) { $uCheck.Output.Trim() } else { "" }
             if ([string]::IsNullOrWhiteSpace($uOut)) {
-                # 空提交（已等价合入/重复）：跳过，不丢改动
+                # Empty commit (already equivalently applied/duplicate): skip, preserving changes
                 Invoke-Git @("cherry-pick", "--skip") | Out-Null
-                Write-Host "ℹ️ 提交 $($c.Hash) 为空（改动已等价存在），已跳过。" -ForegroundColor Yellow
+                Write-Host "ℹ️ Commit $($c.Hash) is empty (changes already exist); skipped." -ForegroundColor Yellow
                 $state.CurrentCommitIndex = $nextIndex
                 [System.IO.File]::WriteAllText($stateFilePath, (ConvertTo-Json $state -Depth 10), [System.Text.Encoding]::UTF8)
                 $nextIndex++
                 continue
             }
-            # 真冲突，更新索引并中断
+            # True conflict: update index and interrupt
             $state.CurrentCommitIndex = $nextIndex
             [System.IO.File]::WriteAllText($stateFilePath, (ConvertTo-Json $state -Depth 10), [System.Text.Encoding]::UTF8)
             $unm = $uOut
-            Write-Host "⚠️ 在提交 $($c.Hash) 再次发生冲突！" -ForegroundColor Yellow
-            Write-Host "冲突文件:`n$unm" -ForegroundColor Red
-            Write-Host "请解决冲突、git add 后再次执行 continue-sync.ps1 -Continue" -ForegroundColor Cyan
+            Write-Host "⚠️ Conflict recurred at commit $($c.Hash)!" -ForegroundColor Yellow
+            Write-Host "Conflict files:`n$unm" -ForegroundColor Red
+            Write-Host "Please resolve conflicts, run git add, then execute continue-sync.ps1 -Continue" -ForegroundColor Cyan
             exit 1
         }
         $headTip = (Invoke-Git @("rev-parse", "HEAD")).Output
         if (-not (Test-ContentPreserved $c.FullHash $headTip.Trim())) {
-            throw "内容校验失败：提交 $($c.Hash) - $($c.Subject) 落地后改动不完整，疑似内容丢失，已中断！"
+            throw "Content preservation check failed: commit $($c.Hash) - $($c.Subject) was incomplete after landing; suspected data loss, interrupted!"
         }
         $nextIndex++
     }
 
-    Write-Host "✅ 所有净贡献提交已全部 cherry-pick 完成！" -ForegroundColor Green
+    Write-Host "✅ All net contribution commits successfully cherry-picked!" -ForegroundColor Green
 
-    # Tree-Diff Guard v2：cherry 残留 + 文件级内容包含双重审计
-    Write-Host "🔍 执行合后改动保全审计 (Tree-Diff Guard)..." -ForegroundColor DarkCyan
+    # Tree-Diff Guard v2: cherry residue + file-level content containment dual audit
+    Write-Host "🔍 Executing post-merge change preservation audit (Tree-Diff Guard)..." -ForegroundColor DarkCyan
     $backupSourceRefs = $state.BackupSourceRefs
     $guardFailures = [System.Collections.Generic.List[string]]::new()
     if ($null -eq $backupSourceRefs) {
-        Write-Host "⚠️ 状态文件中缺失 BackupSourceRefs（旧状态文件），回退为快照模式巡检。" -ForegroundColor Yellow
+        Write-Host "⚠️ Missing BackupSourceRefs in state file (legacy state); falling back to snapshot inspection." -ForegroundColor Yellow
         foreach ($sb in $allSourceBranches) {
             $checkRef = "refs/sync-backup/$($sb -replace '[^a-zA-Z0-9_\-]', '_')"
-            # 查找最新的快照 ref
             $refLines = @((Invoke-Git @("for-each-ref", "--sort=-committerdate", "--format=%(refname)", "$checkRef*")).Output -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             $bRef = if ($refLines.Count -gt 0) { $refLines[0].Trim() } else { "" }
             if (-not [string]::IsNullOrWhiteSpace($bRef)) {
@@ -462,75 +427,69 @@ if ($Continue -or $Skip) {
                         if ($pcl -match '^\+\s+([0-9a-fA-F]+)\s+(.*)$') {
                             $resHash = $Matches[1]
                             $cSubj = $Matches[2].Trim()
-                            # 空提交无 patch-id、cherry 恒报 `+`：无文件改动即视为已合入。
+                            # Empty commits lack patch-id; cherry always reports `+`. Zero file changes means landed.
                             $emptyCheck = Invoke-Git @("diff-tree", "--no-commit-id", "--name-only", "-r", $resHash)
                             if ($emptyCheck.ExitCode -eq 0 -and [string]::IsNullOrWhiteSpace($emptyCheck.Output)) {
                                 continue
                             }
-                            # 补丁上下文漂移容错：若因并行分支合入顺序导致 patch-id 变化，
-                            # 但落地提交的增删行已完整保留（Test-ContentPreserved），则判定已合入。
+                            # Patch context drift tolerance: if patch-id shifted due to commit order but diff lines preserved, treat as merged
                             if (-not [string]::IsNullOrWhiteSpace($cSubj)) {
-                            $landedBySubj = Invoke-Git @("log", $integBranch, "--fixed-strings", "--grep=$cSubj", "-n", "5", "--format=%H")
-                            if ($landedBySubj.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($landedBySubj.Output))) {
-                                $matched = $false
-                                foreach ($candHash in ($landedBySubj.Output -split "`r?`n")) {
-                                    $ch = $candHash.Trim()
-                                    if (-not [string]::IsNullOrWhiteSpace($ch) -and (Test-ContentPreserved $resHash $ch)) {
-                                        $matched = $true
+                                $landedBySubj = Invoke-Git @("log", $integBranch, "--fixed-strings", "--grep=$cSubj", "-n", "5", "--format=%H")
+                                if ($landedBySubj.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($landedBySubj.Output))) {
+                                    $matched = $false
+                                    foreach ($candHash in ($landedBySubj.Output -split "`r?`n")) {
+                                        $ch = $candHash.Trim()
+                                        if (-not [string]::IsNullOrWhiteSpace($ch) -and (Test-ContentPreserved $resHash $ch)) {
+                                            $matched = $true
+                                            break
+                                        }
+                                    }
+                                    if ($matched) {
+                                        continue
+                                    }
+                                }
+                            }
+                            if (Test-ContentPreserved $resHash $integBranch) {
+                                continue
+                            }
+                            $descendants = Invoke-Git @("rev-list", "$resHash..$bRef", "--reverse")
+                            if ($descendants.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($descendants.Output))) {
+                                $descMerged = $false
+                                foreach ($descHash in ($descendants.Output -split "`r?`n")) {
+                                    $dh = $descHash.Trim()
+                                    if (-not [string]::IsNullOrWhiteSpace($dh) -and (Test-ContentPreserved $dh $integBranch)) {
+                                        $descMerged = $true
                                         break
                                     }
                                 }
-                                if ($matched) {
+                                if ($descMerged) {
                                     continue
                                 }
                             }
-                        }
-                        if (Test-ContentPreserved $resHash $integBranch) {
-                            continue
-                        }
-                        $descendants = Invoke-Git @("rev-list", "$resHash..$bRef", "--reverse")
-                        if ($descendants.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($descendants.Output))) {
-                            $descMerged = $false
-                            foreach ($descHash in ($descendants.Output -split "`r?`n")) {
-                                $dh = $descHash.Trim()
-                                if (-not [string]::IsNullOrWhiteSpace($dh) -and (Test-ContentPreserved $dh $integBranch)) {
-                                    $descMerged = $true
-                                    break
-                                }
-                            }
-                            if ($descMerged) {
-                                continue
-                            }
-                        }
-                        $guardFailures.Add("源分支 '$sb' 仍有未合入净提交: $resHash $cSubj")
+                            $guardFailures.Add("Source branch '$sb' has unapplied net commit: $resHash $cSubj")
                         }
                     }
                 }
             }
         }
     } else {
-        foreach ($sb in $allSourceBranches) {
-            $bRef = ""
-            if ($backupSourceRefs -is [System.Collections.IDictionary]) {
-                if ($backupSourceRefs.Contains($sb)) { $bRef = [string]$backupSourceRefs[$sb] }
-            } else {
-                $prop = $backupSourceRefs.PSObject.Properties[$sb]
-                if ($null -ne $prop) { $bRef = [string]$prop.Value }
-            }
+        foreach ($prop in $backupSourceRefs.PSObject.Properties) {
+            $sb = $prop.Name
+            $bRef = [string]$prop.Value
             if ([string]::IsNullOrWhiteSpace($bRef)) { continue }
+
             $postCherry = Invoke-Git @("cherry", "-v", $integBranch, $bRef)
             if ($postCherry.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($postCherry.Output))) {
                 foreach ($pcl in ($postCherry.Output -split "`r?`n")) {
                     if ($pcl -match '^\+\s+([0-9a-fA-F]+)\s+(.*)$') {
                         $resHash = $Matches[1]
                         $cSubj = $Matches[2].Trim()
-                        # 空提交无 patch-id、cherry 恒报 `+`：无文件改动即视为已合入。
+                        # Empty commits lack patch-id; cherry always reports `+`. Zero file changes means landed.
                         $emptyCheck = Invoke-Git @("diff-tree", "--no-commit-id", "--name-only", "-r", $resHash)
                         if ($emptyCheck.ExitCode -eq 0 -and [string]::IsNullOrWhiteSpace($emptyCheck.Output)) {
                             continue
                         }
-                        # 补丁上下文漂移容错：若因并行分支合入顺序导致 patch-id 变化，
-                        # 但落地提交的增删行已完整保留（Test-ContentPreserved），则判定已合入。
+                        # Patch context drift tolerance
                         if (-not [string]::IsNullOrWhiteSpace($cSubj)) {
                             $landedBySubj = Invoke-Git @("log", $integBranch, "--fixed-strings", "--grep=$cSubj", "-n", "5", "--format=%H")
                             if ($landedBySubj.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($landedBySubj.Output))) {
@@ -564,43 +523,46 @@ if ($Continue -or $Skip) {
                                 continue
                             }
                         }
-                        $guardFailures.Add("源分支 '$sb' 仍有未合入净提交: $resHash $cSubj")
+                        $guardFailures.Add("Source branch '$sb' has unapplied net commit: $resHash $cSubj")
                     }
                 }
             }
-            $mbRes = Invoke-Git @("merge-base", $integBranch, $bRef)
-            if ($mbRes.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($mbRes.Output))) {
-                $mb = $mbRes.Output.Trim()
-                $srcFilesOut = (Invoke-Git @("diff", "--name-only", $mb, $bRef)).Output
-                $integFilesOut = (Invoke-Git @("diff", "--name-only", $mb, $integBranch)).Output
-                $srcFiles = @($srcFilesOut -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
+
+            # File-level diff check
+            $mBase = (Invoke-Git @("merge-base", $integBranch, $bRef)).Output
+            if (-not [string]::IsNullOrWhiteSpace($mBase)) {
+                $srcDiff = Invoke-Git @("diff", "--name-only", "$mBase..$bRef")
+                $srcFiles = if ($srcDiff.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($srcDiff.Output))) {
+                    @($srcDiff.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                } else { @() }
+                $integDiff = Invoke-Git @("diff", "--name-only", "$mBase..$integBranch")
                 $integSet = @{}
-                foreach ($f in ($integFilesOut -split "`r?`n")) {
-                    $t = $f.Trim()
+                foreach ($t in ($integDiff.Output -split "`r?`n")) {
+                    $t = $t.Trim()
                     if (-not [string]::IsNullOrWhiteSpace($t)) { $integSet[$t] = $true }
                 }
                 $missing = @($srcFiles | Where-Object { -not $integSet.ContainsKey($_) })
                 if ($missing.Count -gt 0) {
-                    $guardFailures.Add("源分支 '$sb' 文件级缺失: $($missing -join ', ')")
+                    $guardFailures.Add("Source branch '$sb' missing files: $($missing -join ', ')")
                 }
             }
         }
     }
     if ($guardFailures.Count -gt 0) {
-        throw "Tree-Diff Guard 拦截：`n$($guardFailures -join "`n")"
+        throw "Tree-Diff Guard intercepted:`n$($guardFailures -join "`n")"
     }
-    Write-Host "✅ Tree-Diff Guard 审计通过：所有分支改动已 100% 完整合入！" -ForegroundColor Green
+    Write-Host "✅ Tree-Diff Guard audit passed: all branch changes 100% preserved!" -ForegroundColor Green
 
-    # 推送集成分支
+    # Push integration branch
     $hasRemote = ((Invoke-Git @("remote", "get-url", "origin")).ExitCode -eq 0)
     if ($hasRemote -and (-not $skipPush)) {
-        Write-Host ">> 推送集成分支 origin/$integBranch..." -ForegroundColor DarkGray
+        Write-Host ">> Pushing integration branch origin/$integBranch..." -ForegroundColor DarkGray
         $pInteg = Invoke-Git @("push", "origin", $integBranch)
-        if ($pInteg.ExitCode -ne 0) { throw "推送集成分支失败: $($pInteg.Error)" }
+        if ($pInteg.ExitCode -ne 0) { throw "Failed to push integration branch: $($pInteg.Error)" }
     }
 
-    # 对齐所有分支与 Worktree
-    Write-Host ">> 批量对齐所有分支与 Worktree 至最新集成分支 Tip..." -ForegroundColor Cyan
+    # Align all branches and worktrees
+    Write-Host ">> Batch aligning all branches & Worktrees to latest integration branch tip..." -ForegroundColor Cyan
     $integTip = (Invoke-Git @("rev-parse", $integBranch)).Output
     $wtInfo = Get-WorktreeMap
     $currentDir = (Get-Location).Path
@@ -616,11 +578,11 @@ if ($Continue -or $Skip) {
         } else {
             Invoke-Git @("branch", "-f", $sb, $integTip) | Out-Null
         }
-        Write-Host "  ✅ 分支 '$sb' 已对齐" -ForegroundColor Green
+        Write-Host "  ✅ Branch '$sb' aligned" -ForegroundColor Green
     }
 
     if ($hasRemote -and (-not $skipPush)) {
-        Write-Host ">> 安全推送所有对齐分支 (--force-with-lease)..." -ForegroundColor Cyan
+        Write-Host ">> Safely pushing all aligned branches (--force-with-lease)..." -ForegroundColor Cyan
         $remoteNames = Get-RemoteNames
         $pushBranches = $allSourceBranches | Where-Object { $_ -ne $integBranch -and (Test-ValidBranchName $_ $remoteNames) }
         if ($pushBranches.Count -gt 0) {
@@ -631,14 +593,14 @@ if ($Continue -or $Skip) {
                     Invoke-Git @("push", "--force-with-lease", "origin", $pb) | Out-Null
                 }
             }
-            Write-Host "  ✅ 全部对齐分支已推送到 origin" -ForegroundColor Green
+            Write-Host "  ✅ All aligned branches pushed to origin" -ForegroundColor Green
         }
     }
 
-    # 合后验证
+    # Post-merge verification
     $verifyStatus = "SKIPPED"
     if (-not $NoVerify -and (-not [string]::IsNullOrWhiteSpace($declaredVerifyCmd))) {
-        Write-Host ">> 运行项目专属合后验证命令: $declaredVerifyCmd" -ForegroundColor Cyan
+        Write-Host ">> Running project post-merge verification command: $declaredVerifyCmd" -ForegroundColor Cyan
         try {
             $pinfo = New-Object System.Diagnostics.ProcessStartInfo
             if ($IsWindows -or ($PSVersionTable.PSEdition -ne "Core" -and [System.Environment]::OSVersion.Platform -like "*Win*")) {
@@ -658,25 +620,25 @@ if ($Continue -or $Skip) {
             if ($vProc.ExitCode -eq 0) {
                 $verifyStatus = "PASSED ($declaredVerifyCmd)"
             } else {
-                $verifyStatus = "FAILED (退出码 $($vProc.ExitCode))"
+                $verifyStatus = "FAILED (Exit code $($vProc.ExitCode))"
             }
         } catch {
             $verifyStatus = "ERROR ($($_.Exception.Message))"
         }
     }
 
-    # 清理状态文件
+    # Clean state file
     Remove-Item -Path $stateFilePath -Force -ErrorAction SilentlyContinue
 
     Write-Host ""
     Write-Host "================== BRANCH SYNC SUCCESS ==================" -ForegroundColor Green
-    Write-Host "集成分支:       $integBranch ($($integTip.Substring(0, [Math]::Min(7, $integTip.Length))))"
-    Write-Host "已同步分支:     $($allSourceBranches.Count) 个分支 (已全部对齐并安全推送)"
-    Write-Host "合入净提交数:   $($orderedCommits.Count) 个 (严格线性，0 Merge)"
-    Write-Host "改动保全审计:   ✅ PASSED (Tree-Diff 100% 完整保留)"
-    Write-Host "合后门禁验证:   $verifyStatus"
-    Write-Host "工作区状态:     ✅ 干净 (Clean)"
-    Write-Host "状态判定:       COMPLETED_READY_TO_REPORT"
+    Write-Host "Integration branch: $integBranch ($($integTip.Substring(0, [Math]::Min(7, $integTip.Length))))"
+    Write-Host "Synced branches:    $($allSourceBranches.Count) branches (all aligned and safely pushed)"
+    Write-Host "Landed net commits: $($orderedCommits.Count) (strictly linear, 0 merge)"
+    Write-Host "Preservation audit: ✅ PASSED (Tree-Diff 100% preserved)"
+    Write-Host "Gate verification:  $verifyStatus"
+    Write-Host "Working tree state: ✅ Clean"
+    Write-Host "Final status:       COMPLETED_READY_TO_REPORT"
     Write-Host "=========================================================" -ForegroundColor Green
     Write-Host ""
 }
