@@ -4,6 +4,7 @@
   "project_name": "bque",
   "layers": [
     "common",
+    "just",
     "rust",
     "lefthook",
     "agent",
@@ -54,18 +55,21 @@
     ".agents\\skills\\subrepo-sync\\REFERENCE.md": "d042b804ac1d0357020c63494449dc4eb89fae4874036433cd606dedfc0d5254",
     ".agents\\skills\\subrepo-sync\\SKILL.md": "d8f5ecc7106e84c3713289a0717602cd2224d04393b7c27372e316278c471da1",
     ".agents\\skills\\subrepo-sync\\scripts\\show-unapplied-commits.ps1": "79c1d9410582a4f1eeb78f1031e7f601c0b0ce0e5a2d122808d61b7ae034f866",
-    ".agents\\skills\\template-sync\\SKILL.md": "08fbb04d41862ecc2c8162695c05daab2f0cd29fe31210273adf78d7a3a23362",
+    ".agents\\skills\\template-sync\\SKILL.md": "cb6032c864822f6457432e47926277b99dc8ae7f2efcfce3905f4a373d948c3c",
     ".agents\\skills\\template-sync\\scripts\\sync-template.ps1": "5236629dab596145a89a8d2c8ba81b3b84062086f268c9fd57294bef767fd2c7",
     ".agents\\skills\\write-a-skill\\SKILL.md": "2aa59239ea0d7f20dfdc51c1b5619981e6527ea343f4eae1534c5108e412423d",
     ".agents\\skills\\write-docs\\SKILL.md": "32e754301afaa771f77dc0869003ace3867ca37a7c8a63b056644edd2dafeb8a",
     ".cargo\\config.toml": "c2be64b577d101e3ea39ee52841c6fa7f9d26fce23057908403900a654371a5f",
-    ".gitattributes": "269bd23209da05b77373f5f13adf48536b6ca8f5025570f1a2e5cce289a60b26",
+    ".gitattributes": "82d2b5fa0f4abe8162a3bcce101e85d55fc48cf088d8549e03c49dd9d2e254dc",
     ".gitignore": "1c7bcaf26d932af33205131256d9ae49437fbc58c9280a827926a7e905839924",
     ".vscode\\settings.json": "77385e2d97940ac44b45499b21d7694713a232b424e675f38be66217e63366a5",
-    "AGENTS.md": "62261e06b362e74f2ea3c415b04d17dfdd5c163588e433342796da27b768562f",
-    "commitlint.base.js": "7a6e2a5ae12b31ee0da5104b3d3ef321ea55aa07c8fa630e0aa11e7e3195a4f2",
-    "justfile": "86400f8de4e1fe79e18065d4bbfdb9804c0fefa9f8e27ed807c662e7268484c3",
-    "package.json": "585980df6081c2b8a716ef02082512f63bd5ce26fbeafcb3525abb171cdfdff8",
-    "rust-toolchain.toml": "550d7a5d727260f3c5aa9cfa5b42fc6d7265c67bbfced6c5ca8db2ab0e9e5037"
+    "AGENTS.md": "7863f3485a9e08fe7fce2b186ae7acf837940df2a24641d993f4caeefaa56191",
+    "commitlint.base.js": "1ed1cfc31592561a3d32d0aa2099c6b61640c05d453cddc9e24aa5294907db6f",
+    "just\\bque.just": "457b9afa8070c0699d3c99d0e697b3ebf07077794e6f7dc884ed2eaae43bbe92",
+    "just\\rust.just": "0661b4db39a8b1e64128dd75b1b269ed5a86b73686b322e509dea503efa9b937",
+    "justfile": "aa467d7940157d4e56062c71cfb80ade6d90fdfb3f17e6da8bef685bba0333d2",
+    "package.json": "e03c02dffd724c5ca70aeb6b4590d9e26f7d7efdefe3e4fa92025644f2322642",
+    "rust-toolchain.toml": "550d7a5d727260f3c5aa9cfa5b42fc6d7265c67bbfced6c5ca8db2ab0e9e5037",
+    "scripts\\install-hooks.mjs": "15293924ffe6d0a0a719395f4aacc54a62c6f2889033ef42bce878817725de42"
   }
 }

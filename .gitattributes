@@ -24,6 +24,11 @@
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
 
+# Managed agent assets: the engine renders them as LF and fingerprints the
+# exact bytes, so they must stay LF on checkout. Without this, a repo-level
+# `*.ps1 eol=crlf` makes every update think the skill scripts were modified.
+.agents/** text eol=lf
+
 # ==============================================================================
 # 2. Common binary assets (Binary Files)
 # ==============================================================================
@@ -58,10 +63,17 @@ package-lock.json linguist-generated=true
 yarn.lock linguist-generated=true
 Cargo.lock linguist-generated=true
 
-# Export ignores (exclude workspace configs on git archive)
+# No export-ignore rules on purpose: source archives (git archive, GitHub ZIP)
+# must keep repo rules (.gitignore, .gitattributes) and AI/editor context
+# (.agents/, .github/, .vscode/). Projects that need a trimmed tarball can add
+# export-ignore entries outside this managed block.
+# PENGJ_TEMPLATE_END
+
+# ---------------------------------------------------------------------------
+# 项目专属区：export-ignore 让源码包（git archive / GitHub tarball）不带工作区配置
+# ---------------------------------------------------------------------------
 .gitattributes export-ignore
 .gitignore export-ignore
 .github/ export-ignore
 .vscode/ export-ignore
 .agents/ export-ignore
-# PENGJ_TEMPLATE_END

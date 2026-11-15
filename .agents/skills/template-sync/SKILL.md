@@ -93,7 +93,7 @@ Inspect the target project workspace across the following dimensions:
   - If legacy custom skills exist, note that they will be taken over into transition zones (`needs_review`).
 - **Skill Selection (`--skills`)**:
   - Core baseline: `commit` (Conventional Commits), `template-sync` (upstream updates).
-  - Architecture & Collaboration: `arch-align` (architecture alignment), `git-workflow` (universal git, conventional commits & linear branch sync).
+  - Architecture & Collaboration: `write-docs` (documentation writing & updates, rules owned by the project), `git-workflow` (universal git, conventional commits & linear branch sync).
   - Utilities: `caveman` (token compression), `grill-me` (design grilling), `subrepo-sync` (submodule sync), `write-a-skill` (authoring skills). Default to all skills or tailored subsets.
 
 #### 2. Present Diagnosis & Consult the User (Provide a Recommended Profile)
