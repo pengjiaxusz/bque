@@ -10,15 +10,27 @@ set shell := ["pwsh", "-NoProfile", "-Command"]
 set allow-duplicate-recipes := true
 
 
-import 'just/bque.just'
+import '.pengj-templates/just/bque.just'
 
 
-import 'just/rust.just'
+import '.pengj-templates/just/gate.just'
+
+
+import '.pengj-templates/just/rust.just'
 
 
 # List all available recipes
 default:
     @just --list
+
+# Environment check: toolchain + commit hooks + agent workspace links (extend with .pengj-templates/scripts/doctor.d/)
+[unix]
+doctor *ARGS:
+    @sh .pengj-templates/scripts/doctor.sh {{ARGS}}
+# Environment check: toolchain + commit hooks + agent workspace links (extend with .pengj-templates/scripts/doctor.d/)
+[windows]
+doctor *ARGS:
+    @pwsh -NoProfile -File .pengj-templates/scripts/doctor.ps1 {{ARGS}}
 # PENGJ_TEMPLATE_END
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,4 @@
+# `.trae` is a symlink to this directory, so the specs/plans Trae writes land here.
+/specs
+/plans
+/documents

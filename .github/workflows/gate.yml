@@ -1,0 +1,111 @@
+name: gate
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+# Only the newest run per branch matters: an outdated run reports on a range that no longer exists.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The server-side counterpart of the local commit hooks. It needs nothing from the contributor's machine, so a pull request is checked even when the author never installed the CLI.
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gate:
+    # The name is a stable identifier on purpose: a required status check refers to it, and that reference must not break when the documentation language changes.
+    name: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The full history is needed to walk the commit range, and the head ref keeps GitHub's auto-generated merge commit out of the range.
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Checkout leaves submodules empty, so a project whose path dependencies live in a submodule cannot even load its workspace — and the failure surfaces as a missing dependency rather than a missing submodule. Harmless for projects without submodules.
+          submodules: true
+
+      - name: Install pengj-templates-cli
+        run: |
+          curl -fsSL https://github.com/pengjiaxusz/pengj-templates/releases/latest/download/install.sh | sh
+          echo "${XDG_DATA_HOME:-$HOME/.local/share}/pengj-templates/bin" >> "$GITHUB_PATH"
+
+      - name: Check the commit messages
+        env:
+          # The base of the range: the target branch for a pull request, the previous commit for a push.
+          GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          base="${GATE_BASE:-}"
+          if printf '%s' "$base" | grep -qE '^0+$'; then
+            base=""
+          fi
+          set +e
+          if [ -n "$base" ]; then
+            output=$(pengj-templates-cli gate check-commits --base "$base" 2>&1)
+          else
+            output=$(pengj-templates-cli gate check-commits 2>&1)
+          fi
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "## The commit gate rejected this range"
+              echo ""
+              echo '```'
+              printf '%s\n' "$output"
+              echo '```'
+              echo ""
+              echo "Every commit needs a subject of the form `type(scope): subject`. The rule set lives in `.pengj-templates/gate.toml`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
+      - name: Run the code language guard
+        run: |
+          set +e
+          output=$(pengj-templates-cli gate check 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "## The code language guard reported violations"
+              echo ""
+              echo '```'
+              printf '%s\n' "$output"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
+      - name: Check the documentation language
+        run: |
+          set +e
+          output=$(pengj-templates-cli check-lang --dir . 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "## The documentation language gate reported violations"
+              echo ""
+              echo '```'
+              printf '%s\n' "$output"
+              echo '```'
+              echo ""
+              echo "English projects must have no Han characters; Chinese projects must have Chinese in human-facing copy. Fix the template and run `update`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
+      # The local pre-commit hook formats the staged Rust files; without the CLI that never happens, so the server checks it.
+      - name: Check the formatting
+        run: cargo fmt --check

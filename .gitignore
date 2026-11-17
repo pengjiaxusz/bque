@@ -12,6 +12,13 @@
 # --- rust layer ---
 
 /target
+
+# --- agent layer ---
+
+# Agent client workspace links created by `pengj-templates-cli repo init`
+/.trae
+/.claude/skills
+/.workbuddy
 # PENGJ_TEMPLATE_END
 
 # Release artifacts

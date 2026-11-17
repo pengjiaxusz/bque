@@ -26,6 +26,26 @@ git --no-pager diff --stat
 git --no-pager diff --cached --stat
 ```
 
+
+---
+
+## 2.1 Activate the Commit Gate
+
+The hooks live in `.githooks/`, but git runs them only when `core.hooksPath` points there. Before the first commit in a fresh clone:
+
+```bash
+git config --get core.hooksPath   # expected: .githooks
+```
+
+If it is empty or points elsewhere, run:
+
+```bash
+just doctor --fix        # or: sh .pengj-templates/scripts/doctor.sh --fix
+```
+
+The doctor checks the toolchain and activates the hooks without installing anything. If `core.hooksPath` belongs to another tool, it reports the conflict and leaves it alone.
+
+
 ---
 
 ## 3. Pre-Commit Completeness Check
@@ -55,7 +75,7 @@ Format: `type(scope): subject`
   - ✅ Correct: `feat(cli): add new flags`
 - **Type/Scope in English**:
   - Types: `feat` `fix` `docs` `style` `refactor` `perf` `test` `build` `ci` `chore` `revert`
-  - Scope: from the project's `commitlint.config.js` scope-enum whitelist when present.
+  - Scope: from the project's `.pengj-templates/gate.toml` `commit.scopes` whitelist when it is not empty.
 - **Entry points**: host-provided `/commit` commands and hand-written `git commit` must obey the same rule; rewrite auto-generated Chinese subjects before committing.
 
 

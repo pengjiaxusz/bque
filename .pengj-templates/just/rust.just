@@ -1,4 +1,4 @@
-# just/rust.just — common tasks for a single-crate Rust project (managed by the rust layer)
+# .pengj-templates/just/rust.just — common tasks for a single-crate Rust project (managed by the rust layer)
 # Imported by the root justfile based on the selected layers. If the project has its own
 # orchestration, set options["just_recipes"] = "none" and keep these recipes in the project-owned area.
 

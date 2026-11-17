@@ -46,7 +46,7 @@ cargo run -p pengj-templates-cli -- adopt --dir <project-dir> --layers <layer1,l
 
 ### 1. Diagnose & Select Action
 
-Check whether the target project has `.pengj-templates.json`:
+Check whether the target project has `.pengj-templates/manifest.json`:
 
 - **Inspection / Verification**: Run **Audit Mode** (Step 2C) to detect whether downstream has drifted or violated template rules.
 - **Manifest exists**: The project is already managed. Proceed to **Update Mode** (Step 2A).
@@ -62,7 +62,7 @@ Check whether the target project has `.pengj-templates.json`:
    # Or via CLI directly (then follow Step 4 to commit the applied project)
    cargo run -p pengj-templates-cli -- update --dir <project-dir> --sync-skills
    ```
-2. The engine reads `.pengj-templates.json` to reuse original options (`edition`, `skills`, `skill_lang`, etc.) and performs baseline-driven sync:
+2. The engine reads `.pengj-templates/manifest.json` to reuse original options (`edition`, `skills`, `skill_lang`, etc.) and performs baseline-driven sync:
    - **Pure skill assets (`.agents/skills/`)**: When `--sync-skills` is enabled (default in fast-track script), pure skills and helper scripts without managed blocks are cleanly updated to the latest template without raising false conflicts.
    - **Unmodified files**: Overwritten cleanly with the latest template.
    - **Files with managed blocks (`PENGJ_TEMPLATE_START/END`)**: Managed block is replaced in place; user-owned area outside is preserved.
@@ -78,7 +78,7 @@ When adopting an unmanaged new or existing repository, **never run adopt blindly
 Inspect the target project workspace across the following dimensions:
 - **Tech Stack & Layer Compatibility**:
   - Check project files: If `Cargo.toml` exists, it matches the Rust stack — recommend `rust` or `rust-workspace`. **Strictly avoid Rust layers for non-Rust repositories**.
-  - Check toolchains: Does the repo have Node.js / frontend assets (`package.json`)? If yes, or if local Git Hook commit enforcement is desired, recommend `lefthook`. For pure script or lightweight projects without Node, default to excluding `lefthook` (avoiding extra npm/pnpm tooling), but present it as an optional enhancement.
+  - Check toolchains: does the repo need local Git hook commit enforcement? If yes, recommend the `gate` layer — it is a pure Rust implementation with no Node dependency, and its hooks call `pengj-templates-cli` (one binary covers the template CLI, the MCP installer and the gate). For projects that only want files and no local hook enforcement, default to excluding `gate`, but present it as an optional enhancement.
   - Editor settings: Recommend `vscode` to inject file nesting patterns (`explorer.fileNesting`); existing `.vscode` configs merge automatically.
   - `common` and `agent` are foundational and core layers for all projects (always required).
 - **Programming Paradigm Detection (`--chinese` Chinese Programming)**:
@@ -94,14 +94,15 @@ Inspect the target project workspace across the following dimensions:
 - **Skill Selection (`--skills`)**:
   - Core baseline: `commit` (Conventional Commits), `template-sync` (upstream updates).
   - Architecture & Collaboration: `write-docs` (documentation writing & updates, rules owned by the project), `git-workflow` (universal git, conventional commits & linear branch sync).
-  - Utilities: `caveman` (token compression), `grill-me` (design grilling), `subrepo-sync` (submodule sync), `write-a-skill` (authoring skills). Default to all skills or tailored subsets.
+  - Utilities: `caveman` (token compression), `grill-me` / `grilling` (design grilling), `subrepo-sync` (submodule sync), `write-a-skill` (authoring skills).
+  - Engineering & Productivity Suites (from `mattpocock/skills`): `ask-matt`, `code-review`, `codebase-design`, `diagnosing-bugs`, `domain-modeling`, `grill-with-docs`, `implement`, `implement-spec`, `improve-codebase-architecture`, `pr`, `prototype`, `research`, `retro`, `setup-matt-pocock-skills`, `tdd`, `to-spec`, `to-tickets`, `triage`, `wayfinder`, `wizard`, `handoff`, `teach`, `to-questionnaire`, `wait-what`, `writing-for-agents`. Default to all skills or tailored subsets.
 
 #### 2. Present Diagnosis & Consult the User (Provide a Recommended Profile)
 
 Present a structured diagnostic report to the user:
 - **Project Diagnosis Summary**: Tech stack, Chinese programming style, commit conventions, existing asset safety;
 - **Primary Recommendation (Marked `(Recommended)`)**: Specific layers (e.g. `--layers common,agent,vscode`), options (e.g. `--chinese`, `--commit-and-push`), and the technical rationale;
-- **Alternative / Add-on Profiles**: Feasible variations (e.g. adding `lefthook` with its trade-offs regarding Node dependencies);
+- **Alternative / Add-on Profiles**: Feasible variations (e.g. adding the `gate` layer for local commit enforcement);
 - **Command Preview**: Exact CLI command preview;
 - **Consultation**: Ask the user via structured choice (e.g. `ask_question` or interactive prompt) for confirmation or adjustments.
 
@@ -139,7 +140,7 @@ Inspect the CLI execution report:
 - **`conflicted` — Unmanaged Modified Files**:
   - Review `path` and `reason`. Compare diffs and manually apply upstream template updates if needed.
 - **Toolchain / Workspace Wiring**:
-  - Verify `commitlint.base.js` wiring, `.vscode/settings.json`, or `.cargo/config.toml` merged as expected.
+  - Verify the gate layer landed as expected (`.pengj-templates/gate.toml` plus `.githooks/*`), and that `.vscode/settings.json` or `.cargo/config.toml` merged as expected.
 
 ### 4. Verify & Auto-Commit the Applied Project
 
@@ -153,8 +154,8 @@ Inspect the CLI execution report:
 2. **Auto-commit policy & selective staging (Red line)**:
    - **Commit by default**: after a successful `update` / `adopt`, the Agent MUST commit the template sync in the **applied project** and push it. Never leave applied template updates sitting uncommitted waiting for the user — this is exactly why template changes used to "never get committed".
    - **Commit the right repository**: the commit above belongs to the downstream project that was just applied. Changes to the upstream `pengj-templates` repository (template sources, engine, docs) are committed separately in that repository, never mixed in.
-   - **Strict selective staging**: stage ONLY the paths listed in this run's update report (`[Updated]` / `[Added]` plus `.pengj-templates.json`). NEVER `git add .` or `git commit -a`, so pre-existing unrelated or dirty working-tree changes are not swept in.
-   - **Message language follows the target project**: read `options.commit_zh` from the target's `.pengj-templates.json`. When true the subject MUST be written in Chinese (see the target's `commit.md` for examples), when false it MUST be English (e.g. `chore: sync layered template updates`). The commit-msg hook enforces this.
+   - **Strict selective staging**: stage ONLY the paths listed in this run's update report (`[Updated]` / `[Added]` plus `.pengj-templates/manifest.json`). NEVER `git add .` or `git commit -a`, so pre-existing unrelated or dirty working-tree changes are not swept in.
+   - **Message language follows the target project**: read `options.commit_zh` from the target's `.pengj-templates/manifest.json`. When true the subject MUST be written in Chinese (see the target's `commit.md` for examples), when false it MUST be English (e.g. `chore: sync layered template updates`). The commit-msg hook enforces this.
    - **Opt out** only when the user explicitly asks not to commit: pass `-NoCommit` / `-NoPush` to the fast-track script, or skip Step 4 manually.
 
 <!-- PENGJ_TEMPLATE_END -->

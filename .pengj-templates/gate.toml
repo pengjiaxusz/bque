@@ -1,0 +1,41 @@
+# PENGJ_TEMPLATE_START
+# .pengj-templates/gate.toml — the commit gate's configuration
+#
+# [template-managed block] `update` replaces only what sits between START and END; the
+# values below the block belong to this project and are never overwritten. Delete the
+# block and `update` prepends a fresh one and asks you to review the leftover prose.
+#
+# The gate is a standalone Rust binary with no third-party dependencies (it ships inside
+# pengj-templates-cli), so every switch it understands lives here rather than in the
+# project manifest. The accepted syntax is a flat TOML subset: `key = value`, with
+# grouped settings written as `section.key = value`. Unknown keys are ignored so an
+# older binary keeps working against a newer config, but a malformed value is a hard
+# error — a typo must never silently disable a check.
+#
+# Keys:
+#   mode                    chinese | english. Drives the code language guard, which
+#                           rejects comments written in the other language.
+#   lang.max_ratio          tolerated share of string violations per file, 0 = none.
+#   lang.max_ident_ratio    tolerated share of identifier violations per file.
+#   commit.subject_lang     subject language: zh | en.
+#   commit.subject_min_han  minimum Han characters in a Chinese subject.
+#   commit.max_header       maximum characters in the header line.
+#   commit.types            allowed conventional-commit types.
+#   commit.scopes           three-state scope policy. Drop the key or set [] to reject
+#                           every scope; ["*"] accepts any scope; a list pins a
+#                           whitelist (a segmented scope like `a/b` must match each part).
+#
+# Editing this block is pointless — the next `update` overwrites it. Edit the values.
+# Only keys below the block: prose sitting outside it would be frozen forever, which is
+# exactly the rot this block exists to avoid. `commit.scopes = ["agent", "cli", "lock", "job", "bench", "governor", "state", "runner", "test", "deps", "ci", "docs", "main"]` ships permissive;
+# tighten it to a crate-name list once the project settles.
+# PENGJ_TEMPLATE_END
+
+mode = "english"
+lang.max_ratio = 0.01
+lang.max_ident_ratio = 0.0
+commit.subject_lang = "en"
+commit.subject_min_han = 2
+commit.max_header = 100
+commit.types = ["feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert"]
+commit.scopes = ["agent", "cli", "lock", "job", "bench", "governor", "state", "runner", "test", "deps", "ci", "docs", "main"]

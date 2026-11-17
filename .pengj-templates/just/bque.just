@@ -1,4 +1,4 @@
-# just/bque.just — global cross-worktree build queue (managed by the bque layer; template updates overwrite this file)
+# .pengj-templates/just/bque.just — global cross-worktree build queue (managed by the bque layer; template updates overwrite this file)
 # bque is a Windows global kernel lock scheduler: the unix branch does not queue and only passes the command through.
 # Every heavy command should go through q-run / q-bench to avoid saturating the CPU and polluting benchmarks.
 
