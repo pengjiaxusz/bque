@@ -1,6 +1,6 @@
 {
   "tool": "pengj-templates",
-  "version": "0.73.0",
+  "version": "0.74.0",
   "project_name": "bque",
   "layers": [
     "common",
@@ -70,7 +70,7 @@
     ".github\\rulesets\\gate.json": "0b354077c495330f00a193f4b390c0bc65c73df60ea134c3a317c1174a3c5c66",
     ".github\\workflows\\gate.yml": "fa565de781f72981b2b16e6fd6c035d7f14d7a7e89cff2622e7960c4f9e332f2",
     ".gitignore": "84dd27e7d41f50054e372db1f8074b39e392a50e3cec41fb2ed81aa541d6448a",
-    ".pengj-templates\\gate.toml": "714477fbff0e62398fd13e6f2724c841468dbacb80d4b1e21b3e54b234ca8279",
+    ".pengj-templates\\gate.toml": "ba311b755de7a56d6c65fcb318e8e3e8e29edf4678d6ee08ec89eaafc589c844",
     ".pengj-templates\\just\\bque.just": "1ada5ec501e2df16c3cb2d37b007e67ffa118093729b6b08b8ce013d49bb6534",
     ".pengj-templates\\just\\gate.just": "c30516baa62e86b999ffe37046ed7f84345063361a7e70c79c97a46638156eb2",
     ".pengj-templates\\just\\rust.just": "ebd4f4b2d7000f3e0fb3c47040cd51951182cac3256647479f40c66ca809b90e",
