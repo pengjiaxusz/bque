@@ -152,11 +152,12 @@ Inspect the CLI execution report:
    pnpm build
    ```
 2. **Auto-commit policy & selective staging (Red line)**:
-   - **Commit by default**: after a successful `update` / `adopt`, the Agent MUST commit the template sync in the **applied project** and push it. Never leave applied template updates sitting uncommitted waiting for the user — this is exactly why template changes used to "never get committed".
+   - **Commit and push directly — never ask**: after a successful `update` / `adopt`, the Agent MUST commit the template sync in the **applied project** and push it immediately. Do NOT stop to ask the user "shall I commit / shall I push?". This is pre-authorized and unconditional — never leave applied template updates sitting in the worktree waiting for confirmation; "asking every time" and "never committing" are exactly the behaviours being eliminated here.
    - **Commit the right repository**: the commit above belongs to the downstream project that was just applied. Changes to the upstream `pengj-templates` repository (template sources, engine, docs) are committed separately in that repository, never mixed in.
+   - **Batch sync commits per repository**: when one `update` touches multiple projects, **every applied project must be committed and pushed separately** (each following its own `commit_zh` and gates) — none may be left dirty. For a project with submodules, commit and push the child repository first, then the parent's pointer bump.
    - **Strict selective staging**: stage ONLY the paths listed in this run's update report (`[Updated]` / `[Added]` plus `.pengj-templates/manifest.json`). NEVER `git add .` or `git commit -a`, so pre-existing unrelated or dirty working-tree changes are not swept in.
    - **Message language follows the target project**: read `options.commit_zh` from the target's `.pengj-templates/manifest.json`. When true the subject MUST be written in Chinese (see the target's `commit.md` for examples), when false it MUST be English (e.g. `chore: sync layered template updates`). The commit-msg hook enforces this.
-   - **Opt out** only when the user explicitly asks not to commit: pass `-NoCommit` / `-NoPush` to the fast-track script, or skip Step 4 manually.
+   - **Opt out** only when the user explicitly asked not to commit beforehand: pass `-NoCommit` / `-NoPush` to the fast-track script, or skip Step 4 manually. Absent such an explicit instruction, commit and push without asking.
 
 <!-- PENGJ_TEMPLATE_END -->
 
