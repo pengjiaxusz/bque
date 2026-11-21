@@ -23,15 +23,7 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
     let storage = StateStorage::new()?;
     let desc = args.desc.clone().unwrap_or_else(|| args.command.join(" "));
 
-    let current_dir_str = args
-        .cwd
-        .as_ref()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| {
-            std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default()
-        });
+    let current_dir_str = crate::runner::display_cwd(args.cwd.as_deref());
 
     // Check reentrancy: if already running inside an active bque session, pass through directly
     let is_reentrant = std::env::var("BQUE_ACTIVE_PID")
@@ -176,7 +168,7 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
         observer: args.observer,
     };
     let _heartbeat = if args.observer {
-        None
+        Some(StateHeartbeat::start_observer(storage.clone(), my_pid))
     } else {
         Some(StateHeartbeat::start_lock(storage.clone(), my_pid))
     };

@@ -1,7 +1,7 @@
 use crate::cli::BenchArgs;
 use crate::job::{CpuTopology, ProcessFreezer, apply_process_affinity, apply_process_priority};
 use crate::lock::{NamedMutex, bench_mutex_name};
-use crate::runner::execute_child_command;
+use crate::runner::{display_cwd, execute_child_command};
 use crate::state::{BenchState, StateHeartbeat, StateStorage};
 use crate::ui::{ColorTheme, LiveProgressReporter};
 use anyhow::{Result, anyhow};
@@ -90,6 +90,7 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
         std::process::id(),
         args.command.join(" "),
         desc.clone(),
+        display_cwd(args.cwd.as_deref()),
         frozen_pids.clone(),
     );
     storage.save_bench_state(&state)?;

@@ -185,6 +185,47 @@ pub fn truncate_str(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Shorten a path without losing its tail: `E:\D\...\dunting-qt\worktrees\a`.
+///
+/// The trailing segments name the project and worktree, which is exactly what
+/// identifies a task, so they are kept while the middle is elided.
+pub fn compact_path(path: &str, max_chars: usize) -> String {
+    if path.chars().count() <= max_chars {
+        return path.to_string();
+    }
+
+    let separator = if path.contains('\\') { '\\' } else { '/' };
+    let segments: Vec<&str> = path.split(separator).filter(|s| !s.is_empty()).collect();
+    if segments.len() < 3 || max_chars < 16 {
+        return truncate_str(path, max_chars);
+    }
+
+    let head = segments[0];
+    let head_len = head.chars().count();
+    let mut tail: Vec<&str> = Vec::new();
+    let mut tail_len = 0usize;
+    for segment in segments.iter().skip(1).rev() {
+        let cost = segment.chars().count() + 1; // separator + segment
+        // 5 chars reserved for the elision marker: head + "\...\".
+        if head_len + 5 + tail_len + cost > max_chars {
+            break;
+        }
+        tail_len += cost;
+        tail.push(segment);
+    }
+    if tail.is_empty() {
+        return truncate_str(path, max_chars);
+    }
+    tail.reverse();
+    format!(
+        "{}{}...{}{}",
+        head,
+        separator,
+        separator,
+        tail.join(&separator.to_string())
+    )
+}
+
 pub fn format_duration_secs(secs: u64) -> String {
     if secs < 60 {
         format!("{}s", secs)
@@ -220,6 +261,16 @@ mod tests {
     fn test_truncate_str() {
         assert_eq!(truncate_str("hello", 10), "hello");
         assert_eq!(truncate_str("hello world", 8), "hello...");
+    }
+
+    #[test]
+    fn test_compact_path_keeps_the_worktree_tail() {
+        let path = r"E:\D\pengj\dunting-qt\worktrees\a";
+        assert_eq!(compact_path(path, 60), path);
+        let short = compact_path(path, 28);
+        assert!(short.starts_with("E:\\...\\"), "got: {short}");
+        assert!(short.ends_with("worktrees\\a"), "got: {short}");
+        assert!(short.chars().count() <= 28, "got: {short}");
     }
 
     #[test]

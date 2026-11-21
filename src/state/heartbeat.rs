@@ -1,4 +1,6 @@
-use crate::state::storage::{BENCH_HEARTBEAT_INTERVAL, LOCK_HEARTBEAT_INTERVAL, StateStorage};
+use crate::state::storage::{
+    BENCH_HEARTBEAT_INTERVAL, LOCK_HEARTBEAT_INTERVAL, OBSERVER_HEARTBEAT_INTERVAL, StateStorage,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -12,6 +14,7 @@ const TICK: Duration = Duration::from_millis(500);
 pub enum HeartbeatKind {
     Lock,
     Bench,
+    Observer,
 }
 
 /// Refreshes the heartbeat of a long-running state record.
@@ -33,6 +36,17 @@ impl StateHeartbeat {
         Self::start(storage, pid, HeartbeatKind::Bench, BENCH_HEARTBEAT_INTERVAL)
     }
 
+    /// Observers hold no lock, but they still own a record: without a heartbeat
+    /// a suspended or access-denied dev server would age out of the dashboard.
+    pub fn start_observer(storage: StateStorage, pid: u32) -> Self {
+        Self::start(
+            storage,
+            pid,
+            HeartbeatKind::Observer,
+            OBSERVER_HEARTBEAT_INTERVAL,
+        )
+    }
+
     fn start(storage: StateStorage, pid: u32, kind: HeartbeatKind, interval: Duration) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_signal = Arc::clone(&stop);
@@ -52,6 +66,7 @@ impl StateHeartbeat {
                 let _ = match kind {
                     HeartbeatKind::Lock => storage.touch_lock_state(pid),
                     HeartbeatKind::Bench => storage.touch_bench_state(pid),
+                    HeartbeatKind::Observer => storage.touch_observer(pid),
                 };
             }
         });

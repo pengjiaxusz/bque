@@ -62,6 +62,22 @@ fn resolve_program(program: &str) -> std::path::PathBuf {
     Path::new(program).to_path_buf()
 }
 
+/// Absolute working directory recorded in the queue for display.
+///
+/// A relative `--cwd` is still handed to the child unchanged (that is the
+/// caller's intent), but the dashboard has to name a real place: a queued job
+/// that only shows `..\sibling` cannot be traced back to its worktree.
+pub fn display_cwd(cwd: Option<&Path>) -> String {
+    let absolute = match cwd {
+        Some(path) if path.is_absolute() => path.to_path_buf(),
+        Some(path) => std::env::current_dir()
+            .map(|base| base.join(path))
+            .unwrap_or_else(|_| path.to_path_buf()),
+        None => std::env::current_dir().unwrap_or_default(),
+    };
+    absolute.to_string_lossy().to_string()
+}
+
 pub fn execute_child_command(
     command_args: &[String],
     cwd: Option<&Path>,

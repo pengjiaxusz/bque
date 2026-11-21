@@ -114,9 +114,26 @@ fn bench_record(pid: u32, identity: Option<(u32, u64)>, start_time: &str) -> Str
   "start_time": "{start_time}",
   "command": "cargo bench",
   "description": "cargo bench",
+  "cwd": "E:\\work\\project",
   "frozen_pids": [],
   {identity}
   "heartbeat": null
+}}"#
+    )
+}
+
+fn observer_record(pid: u32, start_time: &str) -> String {
+    format!(
+        r#"{{
+  "pid": {pid},
+  "start_time": "{start_time}",
+  "command": "cargo run -q -p xtask -- dev",
+  "description": "xtask dev server",
+  "cwd": "E:\\work\\project\\worktrees\\a",
+  "priority": "Idle",
+  "cpu_rate": 30,
+  "is_observer": true,
+  "heartbeat": "{start_time}"
 }}"#
     )
 }
@@ -275,6 +292,43 @@ fn test_status_dashboard_rendering() {
         stdout.contains("WAITERS")
             || stdout.contains("BUILD QUEUE")
             || stdout.contains("BUILDS MANUALLY PAUSED")
+    );
+}
+
+#[test]
+fn test_status_names_each_task_working_directory() {
+    let harness = Harness::new("cwd_detail");
+    let me = std::process::id();
+    let now = chrono::Utc::now().to_rfc3339();
+    harness.write_state("lock_state.json", &lock_record(me, None, &now));
+    harness.write_state(
+        &format!("waiters/waiter_{}.json", me),
+        &waiter_record(me, &now),
+    );
+    harness.write_state(
+        &format!("observers/observer_{}.json", me),
+        &observer_record(me, &now),
+    );
+
+    let output = harness
+        .cmd()
+        .arg("status")
+        .output()
+        .expect("Failed to execute bque status");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("dir  E:\\work\\project"),
+        "the lock and waiter must report their working directory; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("dir  E:\\work\\project\\worktrees\\a"),
+        "the observer must report its worktree; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("cmd  cargo run -q -p xtask -- dev"),
+        "a task whose command differs from the headline must show it; got:\n{stdout}"
     );
 }
 

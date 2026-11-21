@@ -10,6 +10,8 @@ use std::time::{Duration, SystemTime};
 pub const LOCK_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 /// A lock record whose owner cannot be inspected is dropped after this lease.
 pub const LOCK_LEASE: Duration = Duration::from_secs(90);
+/// How often an observer refreshes its heartbeat.
+pub const OBSERVER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 /// How often a queued waiter refreshes its heartbeat.
 pub const WAITER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 /// A waiter record with an uninspectable owner is dropped after this lease.
@@ -61,6 +63,9 @@ pub struct BenchState {
     pub start_time: DateTime<Utc>,
     pub command: String,
     pub description: String,
+    /// Working directory of the benchmark; absent in records written by older versions.
+    #[serde(default)]
+    pub cwd: String,
     pub frozen_pids: Vec<u32>,
     #[serde(default)]
     pub identity: Option<ProcessIdentity>,
@@ -180,12 +185,19 @@ impl WaiterState {
 }
 
 impl BenchState {
-    pub fn record(pid: u32, command: String, description: String, frozen_pids: Vec<u32>) -> Self {
+    pub fn record(
+        pid: u32,
+        command: String,
+        description: String,
+        cwd: String,
+        frozen_pids: Vec<u32>,
+    ) -> Self {
         Self {
             pid,
             start_time: Utc::now(),
             command,
             description,
+            cwd,
             frozen_pids,
             identity: ProcessIdentity::capture(pid),
             heartbeat: Some(Utc::now()),
@@ -310,6 +322,12 @@ impl StateStorage {
 
     pub fn touch_bench_state(&self, pid: u32) -> Result<()> {
         self.touch::<BenchState>(self.bench_file_path(), pid)
+    }
+
+    /// Refresh an observer record. Like the lock, the writable path is the PID
+    /// file itself, so a forced cleanup cannot be resurrected by a heartbeat.
+    pub fn touch_observer(&self, pid: u32) -> Result<()> {
+        self.touch::<LockState>(self.observer_file_path(pid), pid)
     }
 
     pub fn touch_waiter(&self, pid: u32) -> Result<()> {

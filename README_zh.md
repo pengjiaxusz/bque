@@ -108,26 +108,28 @@ bque status
 
 输出示例：
 ```text
-============================================================
-              bque Global Build Queue & Governor            
-============================================================
-
-[1] Active Lock Holder:
-  PID:         12450
-  Description: Compile Engine
-  Command:     cmake --build build --config Release
-  Working Dir: C:\Projects\game-engine
-  Priority:    Idle
-  CPU Rate:    65% (soft-cap)
-  Running For: 18s
-
-[2] Queued Waiters (1):
-  #1  PID 28312  [   6s] Unit tests ('C:\Projects\web-service')
-
-[3] Observers (0):
-  (No observers active)
-============================================================
+╭─ bque • Global Build Queue & Governor ───────────────────────────────────────────────────────────
+│  🏃 ACTIVE BUILD LOCK
+│     PID 12450 • Compile Engine
+│       dir  C:\Projects\game-engine\worktrees\render
+│       cmd  cmake --build build --config Release
+│       meta Idle · CPU 65% (soft-cap) · held 18s · started 06:40:12
+│
+│  ⏳ QUEUED WAITERS (1)
+│     #1  PID 28312  [   6s] Unit tests
+│       dir  C:\Projects\game-engine\worktrees\audio
+│       cmd  cargo test --workspace
+│       meta queued 06:59:30
+│
+│  👀 OBSERVERS (1)
+│     PID 30121  [10m 33s] dev server
+│       dir  C:\Projects\game-engine
+│       cmd  cargo run -q -p xtask -- dev
+│       meta Idle · CPU 30% (soft-cap) · since 06:50:12
+╰──────────────────────────────────────────────────────────────────────────────────────────────────
 ```
+
+每个任务（持锁者、排队者、观察者）都会带上三行明细：`dir` 工作目录、`cmd` 完整命令行（仅当描述与命令不同时显示）、`meta` 优先级 / CPU 预算 / 已运行时长与启动时刻。同一仓库的多个工作树共用一个全机器队列时，靠 `dir` 就能分辨每个任务到底属于哪个工作树。
 
 如需供自动化脚本解析，可使用 `bque status --json` 输出结构化 JSON。
 
