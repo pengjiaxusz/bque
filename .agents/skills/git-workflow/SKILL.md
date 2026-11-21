@@ -35,9 +35,10 @@ Always push immediately after committing to prevent work loss.
 - **Pre-Response Commit Gate (Mandatory Barrier — No Accumulation)**: Whenever files (code, tests, or docs) are created, modified, or deleted in the current turn and have passed verification (builds/tests pass), **you MUST run the commit workflow (completeness checks, split commits, and `git push`) as the very last tool-calling step BEFORE stopping to output your final response to the user**. Never leave verified changes sitting in the working directory before yielding control; never defer committing until the end of a multi-turn conversation or wait for the user to prompt `/commit`.
   - **Planning Modes (`/plan` / `/boost`) Enforcement**: In planning modes, creating or updating `walkthrough.md` does NOT conclude the task; **you are strictly forbidden from stopping after writing a walkthrough — you MUST proceed immediately to commit and push before finishing your turn**.
   - **Cross-Repository Changes (multi-repo / submodules / downstream template syncs)**: Commit and push **every** repository separately, each following its own `AGENTS.md` and project-specific workflow. When one repository references another, **children first, then the parent pointer** (push the referenced repository, e.g. unbound-ui, before the superproject bumps its pointer), and push the batch-synced template repository last.
+  - **Dirty Worktree — Only Your Own Changes**: Stage only the paths you changed for this task (`git add <path>`); never `git add .` or `git commit -a`. If `git status` still lists changes outside your task (another session or the user is mid-edit), **commit your own paths and skip the push** — never format, repair or revert those files just to satisfy a pre-push gate, and never wait for them to finish. Report which repository was committed but left unpushed and why; the session that owns those edits pushes them.
   - **No Consent Round-Trip**: Committing and pushing are part of the task. **Never** ask "shall I commit?", "your changes are mixed into that branch — want me to handle it?", or "should I commit per repo convention?" — that hands the decision back to the user. Stop and ask only when a check fails, a conflict cannot be resolved safely, or the user must choose a branch/merge strategy; otherwise commit and push, then report every repository's commit and push result.
   - **Exemptions**: Committing is only skipped if the turn is purely conversational (zero file changes in `git status`) or if tests/builds failed and you are stopping specifically to ask the user for diagnostic input.
-- **Task Conclusion**: Before concluding any task or delivering final responses, the working tree must be clean and all commits pushed to the remote repository.
+- **Task Conclusion**: Before concluding any task, all of **your own** changes must be committed and pushed. The one exception is a repository whose worktree still carries someone else's uncommitted edits: commit your own paths there and deliberately leave it unpushed.
 - **Explicit user instruction**: When user invokes `/commit`, "commit", "commit & push", etc.
 
 ### 1.2 Pre-Commit Completeness Check — Project-Defined
@@ -47,6 +48,7 @@ If this change touches module boundaries, public APIs, data flow, lifecycle, or 
 
 ### 1.3 Commit Format & Immediate Push
 `git commit -m "<type>(<scope>): <subject>"` followed immediately by `git push`.
+Re-check `git status` right before pushing: if it still lists changes outside your task, commit and stop there — do not push and do not touch those files (see the Dirty Worktree rule in 1.1).
 
 - Subject in English (imperative, short, no trailing period; strictly forbidden to contain Chinese characters).
 - Type/scope in English (`feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`).
