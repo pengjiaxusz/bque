@@ -17,8 +17,8 @@
 | `pnpm bench` | `just bench` | `bque bench` | `High` (Freezes background builds) |
 | `cargo fmt` | `cargo fmt` (Direct) | **Bypass** | Foreground |
 | `git status` / `git commit` | Direct commands | **Bypass** | Foreground |
-| Any ad-hoc heavy command | `just q-run <cmd>` | `bque run` | `Idle` |
-| Any ad-hoc benchmark | `just q-bench <cmd>` | `bque bench` | `High` (Freezes background builds) |
+| Any ad-hoc heavy command | `bque run -- <cmd>` | `bque run` | `Idle` |
+| Any ad-hoc benchmark | `bque bench -- <cmd>` | `bque bench` | `High` (Freezes background builds) |
 | Long-running service: dev server, watch loop, `xtask dev`, `pnpm dev`, `cargo watch` | `bque run --observer -- <cmd>` (**never** plain `bque run`) | `bque run --observer` | `Idle` |
 
 `bque run --observer` applies the same priority / CPU budget but does **not** take the global
@@ -26,10 +26,11 @@ build lock. A server that holds the lock blocks every other build for as long as
 classic "my build hangs for hours" symptom. `bque status` flags a holder older than 30 minutes
 for exactly this reason.
 
-`q-run` / `q-bench` are the generic wrappers for commands that have no dedicated `just` recipe.
-Do not add a `--` separator after the recipe name (`just q-run cargo build --release`), since it
-would become part of the wrapped command. On Unix / CI these wrappers execute the command directly;
-bque is a Windows-only global lock.
+Ad-hoc commands go straight to the native CLI. The layer used to ship a `just q-run` / `just q-bench`
+wrapper and it was removed on purpose: a wrapper can only forward the command itself, never bque's own
+flags (`--cwd`, `--observer`, `--priority`), so it cannot express what an ad-hoc call usually needs.
+Promote a command to a project recipe (`bque run -- <cmd>` inside the recipe) when it earns keeping.
+On Unix / CI there is nothing to wrap — bque is a Windows-only global lock.
 
 ---
 
@@ -67,21 +68,21 @@ If a process crashed abruptly, or the queue is held by a record you want gone ri
 
 ```powershell
 # 0. Verify the installation and PATH fallback
-just queue-doctor
+just doctor
 
 # 1. Inspect lock status (this also performs the healing pass)
-just queue-status   # or: bque status
+bque status
 
 # 2. Clean orphaned state files, and report exactly what was removed
-just queue-clean    # or: bque clean
+bque clean
 
 # 3. Emergency unblock: also drop records whose owner still looks alive
 bque clean --force
 # The kernel mutex stays authoritative, so a genuinely running build keeps running
 
 # 4. Manually pause/resume builds when gaming or running profiling
-just queue-pause    # or: bque pause
-just queue-resume   # or: bque resume
+bque pause
+bque resume
 ```
 
 `bque clean --force` clears state records, not processes: a long-running dev server that still

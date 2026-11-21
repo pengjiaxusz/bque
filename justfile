@@ -1,6 +1,6 @@
 # justfile — unified task entry point (managed by the just layer)
 # The framework area below is a managed block: template updates replace it in place; everything outside the block belongs to the project.
-# Heavy commands go through `just q-run <cmd>`; benchmarks go through `just q-bench <cmd>`.
+# Heavy commands call `bque run -- <cmd>`; benchmarks call `bque bench -- <cmd>` (the bque layer ships no wrapper).
 # PENGJ_TEMPLATE_START
 [unix]
 set shell := ["sh", "-uc"]
@@ -8,9 +8,6 @@ set shell := ["sh", "-uc"]
 set shell := ["pwsh", "-NoProfile", "-Command"]
 # Let the project area override a framework recipe with the same name (e.g. a `test` that pre-builds an artifact), instead of editing the managed imports.
 set allow-duplicate-recipes := true
-
-
-import '.pengj-templates/just/bque.just'
 
 
 import '.pengj-templates/just/gate.just'
@@ -35,6 +32,6 @@ doctor *ARGS:
 
 # ---------------------------------------------------------------------------
 # Project-owned area: template updates only replace the managed block above. This area belongs to the project and is preserved in full.
-# Register project recipes here; new heavy tasks must call `just q-run <cmd>` / `just q-bench <cmd>`.
+# Register project recipes here; new heavy tasks call `bque run -- <cmd>` / `bque bench -- <cmd>` (no ad-hoc wrapper exists).
 # Never run cargo / cmake / ninja / pnpm build / tsc or other compilers raw.
 # ---------------------------------------------------------------------------

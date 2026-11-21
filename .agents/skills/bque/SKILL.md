@@ -22,10 +22,11 @@ A cross-worktree build queue and governor skill. Prevents multi-repository build
 | **Heavy Compilation** (`cargo build`, `cmake`, `ninja`, `pnpm build`, `tsc`, `xtask pack`) | **YES** | `just build` or `bque run -- <cmd>` | Serializes builds, lowers process priority to `Idle` to avoid freezing the OS |
 | **Workspace Lint & Test** (`cargo check`, `cargo clippy`, `cargo test`, `vitest run`) | **YES** | `just check` / `just test` or `bque run -- <cmd>` | High CPU utilization tasks require queue mutual exclusion and background throttling |
 | **Benchmarks & Profiling** (`bench`, `perf`, timing probes) | **YES** | `just bench` or `bque bench -- <cmd>` | **Clean-room mode**: automatically freezes background builds to ensure 0% CPU disturbance |
+| **Long-running service** (dev server, watch loop, `xtask dev`, `pnpm dev`) | **YES, observer mode** | `bque run --observer -- <cmd>` | Same priority / CPU budget, but never takes the global build lock — a server holding it blocks every other build |
 | **Nested / Recursive invocation** (`BQUE_ACTIVE_PID` set) | **NO** | Direct command (`& <cmd>`) or `bque run` (native auto-bypass) | Already under bque governor supervision; avoids recursive queue deadlock |
 | **Fast Formatting & Lint** (`cargo fmt`, single-file `prettier`/`eslint`) | **NO** | Direct command | Fast completion (<1s), negligible CPU usage, no need to queue |
 | **Git Operations** (`git status`, `commit`, `push`, `rebase`) | **NO** | Direct command | I/O-bound operational commands, must never queue behind builds |
-| **State Inspection** (`queue-status`, `queue-clean`) | **NO** | `just queue-status` / `just queue-clean` or `bque status` | Control and diagnostic tools must run immediately |
+| **State Inspection** (`status`, `clean`) | **NO** | `bque status` / `bque clean` | Control and diagnostic tools must run immediately |
 
 See [references/usage-matrix.md](references/usage-matrix.md) for full scenario matrix and command mappings.
 
@@ -55,17 +56,18 @@ just build           # Compile under bque queue & Idle priority
 just check           # Check code under bque supervision
 just test            # Run test suite safely
 just bench           # Clean-room benchmark (freezes background builds)
-just q-run cargo build --release   # Ad-hoc heavy command, no `--` separator
-just q-bench pnpm bench           # Ad-hoc benchmark in clean-room mode
-just queue-status    # Inspect current lock holder and waiters
-just queue-clean     # Clean abnormal or abandoned locks
-just queue-doctor    # Verify bque installation, PATH fallback and lock state
+bque status          # Inspect current lock holder and waiters
+bque clean           # Clean abnormal or abandoned locks
+just doctor          # Verify toolchain, bque installation, PATH fallback and lock state
 ```
 
-When no matching recipe exists, prefer `just q-run <cmd>` over the native CLI. The `justfile` framework
-lives in a managed block (`# PENGJ_TEMPLATE_START/END`); project-owned recipes stay outside it and survive
-template updates. On Unix and in CI the `[unix]` variants of these recipes pass through without bque —
-that is expected, since bque is a Windows-only global lock; never force a raw `bque` call there.
+When no matching recipe exists, go straight to the native CLI (`bque run -- <cmd>`) — there is no
+ad-hoc `just` wrapper. A wrapper can only forward the command, never bque's own flags (`--cwd`,
+`--observer`, `--priority`), which is exactly why it was retired: wrap the *specific* command in a
+project recipe instead. The `justfile` framework lives in a managed block
+(`# PENGJ_TEMPLATE_START/END`); project-owned recipes stay outside it and survive template updates.
+On Unix and in CI the `[unix]` variants of these recipes pass through without bque — that is
+expected, since bque is a Windows-only global lock; never force a raw `bque` call there.
 
 ### Tier 2: Direct Native `bque` CLI (Custom / Ad-hoc Commands)
 When no matching `just` recipe exists, directly invoke `bque`:
@@ -79,6 +81,9 @@ bque bench -- pnpm bench
 # Introspection and queue cleanup
 bque status
 bque clean
+
+# Long-running service: same priority, but no global build lock
+bque run --observer -- cargo run -- dev
 ```
 
 ---
@@ -97,7 +102,7 @@ bque clean
 
 ## 🔧 5. Environment & Installation
 
-Run `just queue-doctor` first: it probes `PATH`, falls back to `$env:LOCALAPPDATA\bque\bin`
+Run `just doctor` first: it probes `PATH`, falls back to `$env:LOCALAPPDATA\bque\bin`
 and prints the one-click install command when bque is missing. For the full setup guide:
 👉 See [references/install.md](references/install.md).
 

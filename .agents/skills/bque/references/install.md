@@ -72,7 +72,7 @@ cargo install --path .
 Prefer the project recipe — it probes `PATH`, falls back to the default install directory and
 prints the one-click install command when bque is missing:
 ```powershell
-just queue-doctor
+just doctor
 ```
 
 To inspect kernel objects and lock status directly:
