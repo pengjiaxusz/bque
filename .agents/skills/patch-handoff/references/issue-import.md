@@ -6,7 +6,7 @@ A handoff package carries tickets as often as it carries patches, and a ticket i
 
 | Shape | Looks like | How to import |
 | :--- | :--- | :--- |
-| Issue bundle | `issues/NNNN-*.md` with `key` / `title` / `labels` / `parent` / `blocked_by` front matter | `issue-push.ps1` — the same format `issue-sync` pulls and pushes |
+| Issue bundle | `issues/NNNN-*.md` with `key` / `title` / `labels` / `parent` / `blocked_by` front matter | `issue-push.ps1` — the bundle format this skill's own scripts read and write |
 | Table in the doc | a markdown table mapping patch → ticket → title | turn each row into an issue file with a `key`, then push the directory |
 | Bare numbers | the doc just cites `#102–#113` | nothing to import; verify each with `gh issue view <n>` and reuse the numbers |
 
@@ -22,17 +22,17 @@ The bundle form is the one to prefer, because it carries the dependency wiring (
 
 ```powershell
 # preview: every create, parent link and blocked_by edge, no remote writes
-pwsh .agents/skills/issue-sync/scripts/issue-push.ps1 -Repo <owner/name> `
+pwsh .agents/skills/patch-handoff/scripts/issue-push.ps1 -Repo <owner/name> `
     -InputDir <pkg>/issues -Mapping ./issue-mapping.json -DryRun
 
 # create; add -Resume if it stops on its time budget
-pwsh .agents/skills/issue-sync/scripts/issue-push.ps1 -Repo <owner/name> `
+pwsh .agents/skills/patch-handoff/scripts/issue-push.ps1 -Repo <owner/name> `
     -InputDir <pkg>/issues -Mapping ./issue-mapping.json
 ```
 
 It writes `issue-mapping.json` (`key` → real number), backfills `number` / `url` into the issue files, links parents as sub-issues and dependencies as native `blocked_by`.
 
-**No `issue-sync` skill in the project** (it is not a baseline skill): `gh issue create --title ... --body-file ...` one by one, in dependency order, and record the numbers by hand in the same mapping shape. Same contract, slower.
+The script is part of this skill (see [issue-sync.md](./issue-sync.md)); there is no extra skill to install.
 
 ## 4. The mapping table
 

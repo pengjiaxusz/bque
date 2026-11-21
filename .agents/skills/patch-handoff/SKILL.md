@@ -2,7 +2,7 @@
 name: patch-handoff
 description: >-
 
-  Verify and land an offline patch handoff package (`HANDOFF.md` + `patches/NNNN-*.patch`): push the issues the package carries up to GitHub first, replay the series with `git am`, repair the build and tests, fold each repair back into the commit that introduced the defect, normalize authorship to the repository owner's identity (auto-resolved, never hand-filled), force-push with lease, sync the worktree, close each mapped issue out after landing, and delete the unpacked temp content. Every acceptance claim in the handoff document is an unverified hypothesis until you reproduce it yourself. Use when receiving a patch series or handoff zip from another agent, or when a delivered series does not compile as claimed. Triggers: patch-handoff, handoff package, handoff zip, patch series, git am, apply patches, verify handoff, fold fixes, offline handoff, upload handoff issues, close handoff issues.
+  Verify and land an offline patch handoff package (`HANDOFF.md` + `patches/NNNN-*.patch`): push the issues the package carries up to GitHub first, replay the series with `git am`, repair the build and tests, fold each repair back into the commit that introduced the defect, normalize authorship to the repository owner's identity (auto-resolved, never hand-filled), force-push with lease, sync the worktree, close each mapped issue out after landing, and delete the unpacked temp content. Every acceptance claim in the handoff document is an unverified hypothesis until you reproduce it yourself. The bundled `issue-pull.ps1` / `issue-push.ps1` also move issues between GitHub and a portable Markdown bundle, so the same tooling exports a backlog or creates issues with native sub-issue and `blocked_by` wiring. Use when receiving a patch series or handoff zip from another agent, when a delivered series does not compile as claimed, or when exporting GitHub issues to Markdown / bulk-creating issues. Triggers: patch-handoff, handoff package, handoff zip, patch series, git am, apply patches, verify handoff, fold fixes, offline handoff, upload handoff issues, close handoff issues, issue export, pull issues, export backlog, push issue files, sub-issue.
 
 ---
 
@@ -43,7 +43,7 @@ git status -sb; git rev-list --count "$BASE"..HEAD     # must be clean and 0
 .agents/skills/patch-handoff/scripts/inspect-handoff-package.sh "$PKG"   # pre-flight audit
 
 # if the package carries issues: import them first and keep the key -> number mapping
-pwsh .agents/skills/issue-sync/scripts/issue-push.ps1 -Repo <owner/name> \
+pwsh .agents/skills/patch-handoff/scripts/issue-push.ps1 -Repo <owner/name> \
     -InputDir <dir>/issues -Mapping ./issue-mapping.json -DryRun   # drop -DryRun to create
 
 .agents/skills/patch-handoff/scripts/normalize-authors.sh "$BASE" --print-identity  # confirm target identity
@@ -75,7 +75,7 @@ A handoff package usually ships its tickets as files — `issues/*.md` with `key
 2. **Create.** Drop `-DryRun`. The script is idempotent — re-running only fills gaps — and writes `mapping.json` (local `key` → real number).
 3. **Map.** Build the `patch NNNN ↔ #number` table from that mapping (and from the numbers the doc already cites, cross-checked with `gh issue view`). The mapping is what S7 walks; a patch with no number is a ticket that is not on GitHub yet.
 4. **Backfill.** Push writes `number` and `url` back into the issue files — keep that so the next handoff can match without guessing.
-5. **No `issue-sync` skill in this project** (it is not a baseline skill): create them one by one with `gh issue create --title ... --body-file ...`, in dependency order, and write the same mapping by hand. Slower, identical contract.
+5. **The scripts ship with this skill.** `issue-push.ps1` / `issue-pull.ps1` live in `scripts/`, next to the handoff tooling — nothing separate to install and no dependency on a skill the project may not have generated. Usage, format and API notes: [references/issue-sync.md](references/issue-sync.md).
 6. **Never invent the mapping.** If a patch title and an issue title do not obviously correspond, stop and ask the user — a guessed number closes the wrong ticket, which is worse than a ticket left open.
 
 Filing is not the same as reporting: problems **you** discover while verifying are not new tickets. They go into the report, and — if the user wants them tracked — as comments on the corresponding ticket. Do not open your own issues unless the user asks for them.
@@ -138,6 +138,7 @@ Green build plus green tests is not feature completeness. Shape or snapshot asse
 - [references/git-mechanics.md](references/git-mechanics.md) — hook trigger matrix, `git am` failure triage, fold preconditions, author rewrite
 - [references/field-notes.md](references/field-notes.md) — real error-to-API table from one landed series
 - [references/issue-import.md](references/issue-import.md) — importing the package's issues, the mapping table, close-out by mapping, `gh` failure modes
+- [references/issue-sync.md](references/issue-sync.md) — the bundled issue scripts: pull/export a backlog, push a bundle back, `gh` API notes and export format
 <!-- PENGJ_TEMPLATE_END -->
 
 
