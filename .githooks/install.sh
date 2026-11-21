@@ -1,5 +1,5 @@
 #!/bin/sh
-# gate install: activate the commit hooks on this clone.
+# gate install: activate the gate hooks on this clone.
 #
 # `core.hooksPath` lives in `.git/config`, which never comes with a clone, so every clone needs this once. The script needs git and a POSIX shell and nothing else — it does not need the CLI, because activating the hooks and running them are separate jobs.
 #
@@ -22,7 +22,7 @@ fi
 git config core.hooksPath .githooks
 
 # On Unix git silently skips a hook that is not executable. The tracked mode bit is the source of truth, and `update-index` is what records it.
-for hook in commit-msg pre-commit; do
+for hook in commit-msg pre-commit pre-push; do
     [ -f ".githooks/$hook" ] || continue
     if git ls-files --error-unmatch ".githooks/$hook" >/dev/null 2>&1; then
         git update-index --chmod=+x ".githooks/$hook"

@@ -43,7 +43,8 @@ jobs:
           GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           base="${GATE_BASE:-}"
-          if printf '%s' "$base" | grep -qE '^0+$'; then
+          # An all-zero base is a branch deletion, and after a force-push the base can point at a commit that no longer exists; both fall back to running without a base, otherwise `git log` errors out and the gate fails for a reason unrelated to the commits.
+          if printf '%s' "$base" | grep -qE '^0+$' || { [ -n "$base" ] && ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1; }; then
             base=""
           fi
           set +e
@@ -63,7 +64,7 @@ jobs:
               printf '%s\n' "$output"
               echo '```'
               echo ""
-              echo "Every commit needs a subject of the form `type(scope): subject`. The rule set lives in `.pengj-templates/gate.toml`."
+              echo 'Every commit needs a subject of the form `type(scope): subject`. The rule set lives in `.pengj-templates/gate.toml`.'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           exit "$status"
@@ -101,7 +102,7 @@ jobs:
               printf '%s\n' "$output"
               echo '```'
               echo ""
-              echo "English projects must have no Han characters; Chinese projects must have Chinese in human-facing copy. Fix the template and run `update`."
+              echo 'English projects must have no Han characters; Chinese projects must have Chinese in human-facing copy. Fix the template and run `update`.'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           exit "$status"

@@ -24,10 +24,42 @@ pwsh .agents/skills/subrepo-sync/scripts/show-unapplied-commits.ps1 -SubrepoPath
 pwsh .agents/skills/subrepo-sync/scripts/show-unapplied-commits.ps1 -SubrepoPath "<path/to/subrepo>" -Update
 ```
 
+## The Registry Is the Single Source of Truth
+
+**Read `.pengj-templates/subrepo.toml` first.** It is the machine-readable registry of every
+sub-repository this project depends on: one `[[subrepo]]` table per entry, carrying the name,
+the relative path, the dependency mode, the upstream tracking branch and whether the
+sub-repository ships its own workspace definition.
+
+```toml
+[[subrepo]]
+name = "example-subrepo"
+path = "submodules/example-subrepo"
+mode = "submodule"        # submodule | fetch | local
+upstream = "origin/main"
+has_workspace = false
+```
+
+Two rules follow from it:
+
+- **The registry decides which sub-repositories exist.** Do not work from a hand-maintained
+  Markdown table: it cannot be parsed, so the skill and the health check would disagree about
+  what the project depends on. The health check (`pengj-templates-cli subrepo check`) reads this
+  very file, so the set of entries the skill suggests upgrading is the set the check verifies.
+- **The dependency mode decides what to do.** `submodule` needs pointer and readiness checks;
+  `fetch` is pinned by the host build system; `local` is a sibling directory on this machine.
+  The mode is a closed enum — an unknown value is a hard error, never a silent skip.
+
+List the registry in human-readable form with:
+
+```powershell
+pengj-templates-cli subrepo list --dir .
+```
+
 ## Standard Upgrade Workflow
 
 ```
-[1. Baseline & Target] ──► [2. Unapplied Commits & Clustering] ──► [3. Safe Checkout / Update] ──► [4. Host Refactor & Adapt] ──► [5. Gate Verification & Commit]
+[0. Read the registry] ──► [1. Baseline & Target] ──► [2. Unapplied Commits & Clustering] ──► [3. Safe Checkout / Update] ──► [4. Host Refactor & Adapt] ──► [5. Gate Verification & Commit]
 ```
 
 ### Step 1: Baseline & Target Discovery

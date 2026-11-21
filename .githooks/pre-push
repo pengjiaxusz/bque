@@ -1,0 +1,41 @@
+#!/bin/sh
+# gate hook: the pre-push stage.
+#
+# Why this stage exists at all: `git am`, `git cherry-pick` and `git rebase` never run `pre-commit` — only `git commit` does. A patch series therefore lands with no formatting or language check, and the problem surfaces in CI instead. `pre-push` is the one hook every history-building command has to pass through.
+#
+# Three checks run before a push leaves the machine:
+#   1. `cargo fmt --check`, the same command CI runs;
+#   2. the code language guard over the whole working tree;
+#   3. every command listed in `prepush.commands` (`.pengj-templates/gate.toml`), in order — that is where a project puts clippy and friends.
+#
+# git passes the refs being pushed on stdin and this hook must forward them untouched, which is why the CLI is `exec`ed rather than captured.
+#
+# The gate lives in `pengj-templates-cli` and nowhere else: this hook only finds the binary and hands the work to `pengj-templates-cli gate hook pre-push`. No CLI means no rule set, so the push is blocked with install instructions instead of being let through by a check that cannot run.
+
+set -e
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+# Locate the CLI: PATH first, then the installation directory. The second step matters for terminals opened before the installer refreshed PATH — without it a working install would look like a missing one.
+if command -v pengj-templates-cli >/dev/null 2>&1; then
+    exec pengj-templates-cli gate hook pre-push
+fi
+
+for candidate in \
+    "${PENGJ_INSTALL_DIR:+$PENGJ_INSTALL_DIR/bin/pengj-templates-cli.exe}" \
+    "${PENGJ_INSTALL_DIR:+$PENGJ_INSTALL_DIR/bin/pengj-templates-cli}" \
+    "${LOCALAPPDATA:+$LOCALAPPDATA/pengj-templates/bin/pengj-templates-cli.exe}" \
+    "${XDG_DATA_HOME:+$XDG_DATA_HOME/pengj-templates/bin/pengj-templates-cli}" \
+    "${HOME:+$HOME/.local/share/pengj-templates/bin/pengj-templates-cli}"
+do
+    if [ -x "$candidate" ]; then
+        exec "$candidate" gate hook pre-push
+    fi
+done
+
+echo "[gate] push blocked: pengj-templates-cli was not found on PATH or in the installation directory." >&2
+echo "[gate] rustfmt and the code language guard live inside the CLI, so there is no local check to fall back to. Install it once and the gate comes with it:" >&2
+echo "[gate]   irm https://github.com/pengjiaxusz/pengj-templates/releases/latest/download/install.ps1 | iex" >&2
+echo "[gate]   curl -fsSL https://github.com/pengjiaxusz/pengj-templates/releases/latest/download/install.sh | sh" >&2
+exit 1

@@ -24,6 +24,11 @@
 #   commit.scopes           three-state scope policy. Drop the key or set [] to reject
 #                           every scope; ["*"] accepts any scope; a list pins a
 #                           whitelist (a segmented scope like `a/b` must match each part).
+#   prepush.commands        extra commands the pre-push hook runs, in order, after its
+#                           built-in `cargo fmt --check` and language guard. Each entry
+#                           is a program plus arguments split on whitespace (no quoting,
+#                           no pipes) — wrap anything complex in a just recipe and name
+#                           it here. Empty or absent means no project-specific check.
 #
 # Editing this block is pointless — the next `update` overwrites it. Edit the values.
 # Only keys below the block: prose sitting outside it would be frozen forever, which is
