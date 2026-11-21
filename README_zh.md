@@ -67,6 +67,24 @@ cargo install --path .
 
 确保 `%USERPROFILE%\.cargo\bin` 已加入系统环境变量 `PATH`。
 
+### 更新已安装的版本
+`bque` 可以自更新：从 GitHub Releases 下载最新的 `bque.exe` 到当前可执行文件旁边，把正在运行的旧文件改名为 `bque.exe.old` 后换上新文件，全程无需管理员权限，也不用重装。
+```powershell
+bque update            # 下载最新发布版覆盖当前二进制
+bque update --check    # 只检查有没有更新，不下载
+bque update --tag v0.1.2 --force   # 指定版本，已是最新也强制重装
+```
+
+如果你要的改动在本地仓库里、还没发版，就从工作区直接安装，让二进制和源码对齐：
+```powershell
+cd D:\path\to\bque
+cargo install --path . --force
+```
+
+两条路可以混用，但写入的不是同一个文件：`bque update` 覆盖的是**它自己**（你调用的那个 `bque.exe`），`cargo install` 固定写 `%USERPROFILE%\.cargo\bin\bque.exe`。用 `Get-Command bque` 看当前解析到哪一个，用 `bque --version` 确认结果。
+
+> 本地仓库和已发布版本可能共用同一个版本号。`bque update` 只比较版本号，所以即使你的工作区有更新的提交，它也会报“已是最新”——要拿到未发布的改动，请从工作区安装。
+
 ---
 
 ## 使用指南

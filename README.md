@@ -64,6 +64,33 @@ cargo install --path .
 
 Ensure `%USERPROFILE%\.cargo\bin` is in your system `PATH`.
 
+### Updating an Existing Install
+`bque` can replace itself from GitHub Releases: it downloads the latest release
+next to the running executable, renames the live binary to `bque.exe.old` and
+moves the new one in place, so no admin rights and no reinstall are needed.
+```powershell
+bque update            # download the latest release over the current binary
+bque update --check    # only report whether a newer release exists
+bque update --tag v0.1.2 --force   # pin a specific release and reinstall anyway
+```
+
+When the change you want is in a local checkout but not yet released, install
+from the working tree so the binary matches the source:
+```powershell
+cd D:\path\to\bque
+cargo install --path . --force
+```
+
+Both paths are safe to mix, but they write to different files: `bque update`
+replaces whichever `bque.exe` launched it, while `cargo install` always writes
+`%USERPROFILE%\.cargo\bin\bque.exe`. Run `Get-Command bque` to see which one
+your shell resolves, and `bque --version` to confirm the result.
+
+> A release and a local checkout can share the same version number. `bque
+> update` compares versions only, so it reports "up to date" even when your
+> checkout carries newer commits — install from the working tree to pick those
+> up.
+
 ---
 
 ## Usage
