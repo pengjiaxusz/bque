@@ -1,15 +1,18 @@
-use crate::cli::{PauseArgs, RunArgs, StatusArgs};
+use crate::cli::{CleanArgs, PauseArgs, RunArgs, StatusArgs};
 use crate::governor::{ActivityGovernorConfig, GovernorWorker, evaluate_target_cpu_rate};
 use crate::job::{CpuTopology, JobObject, apply_process_affinity, apply_process_priority};
-use crate::lock::{BUILD_MUTEX_NAME, NamedMutex};
+use crate::lock::{NamedMutex, build_mutex_name};
 use crate::runner::execute_child_command;
-use crate::state::{LockState, StateStorage, WaiterState, is_pid_alive};
+use crate::state::{
+    LockState, PauseState, StateHeartbeat, StateStorage, WaiterState, is_pid_alive,
+    storage::WAITER_HEARTBEAT_INTERVAL,
+};
 use crate::ui::{ColorTheme, LiveProgressReporter, render_full_dashboard};
 use anyhow::{Result, anyhow};
 use chrono::Utc;
 use std::io::Write;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub fn handle_run(args: RunArgs) -> Result<i32> {
     if args.command.is_empty() {
@@ -43,13 +46,12 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
 
     let _lock_guard = if !args.observer {
         // Register as waiter
-        let waiter = WaiterState {
-            pid: my_pid,
-            queued_at: Utc::now(),
-            command: args.command.join(" "),
-            description: desc.clone(),
-            cwd: current_dir_str.clone(),
-        };
+        let waiter = WaiterState::record(
+            my_pid,
+            args.command.join(" "),
+            desc.clone(),
+            current_dir_str.clone(),
+        );
         storage.register_waiter(&waiter)?;
 
         let timeout = if args.timeout == 0 {
@@ -58,9 +60,11 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
             Duration::from_secs(args.timeout)
         };
 
-        let mutex = NamedMutex::new(BUILD_MUTEX_NAME);
+        let lock_name = build_mutex_name();
+        let mutex = NamedMutex::new(lock_name.clone());
         let mut reporter = LiveProgressReporter::new(my_pid, desc.clone());
-        let start_wait = std::time::Instant::now();
+        let start_wait = Instant::now();
+        let mut last_heartbeat = Instant::now();
 
         // Loop until not paused, no benchmark active, and build mutex acquired
         let guard = loop {
@@ -68,9 +72,19 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
                 let _ = storage.unregister_waiter(my_pid);
                 return Err(anyhow!(
                     "Timed out waiting for lock '{}' after {:?}",
-                    BUILD_MUTEX_NAME,
+                    lock_name,
                     timeout
                 ));
+            }
+
+            // Heal the queue before deciding whether anything blocks us: a record
+            // whose owner exited (or whose PID was recycled) must never keep this
+            // process waiting, and must disappear from the dashboard immediately.
+            let _ = storage.reap();
+
+            if last_heartbeat.elapsed() >= WAITER_HEARTBEAT_INTERVAL {
+                let _ = storage.touch_waiter(my_pid);
+                last_heartbeat = Instant::now();
             }
 
             // 1. Check if paused or benchmark active
@@ -136,22 +150,36 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
     };
 
     // Record active state
-    let active_state = LockState {
-        pid: my_pid,
-        start_time: Utc::now(),
-        command: args.command.join(" "),
-        description: desc.clone(),
-        cwd: current_dir_str,
-        priority: format!("{:?}", args.priority),
-        cpu_rate: target_rate,
-        is_observer: args.observer,
-    };
+    let active_state = LockState::record(
+        my_pid,
+        args.command.join(" "),
+        desc.clone(),
+        current_dir_str,
+        format!("{:?}", args.priority),
+        target_rate,
+        args.observer,
+    );
 
     if args.observer {
         storage.register_observer(&active_state)?;
     } else {
         storage.save_lock_state(&active_state)?;
     }
+
+    // Keep proving this record is alive for as long as the child runs, so a
+    // stale-looking entry can only ever appear after this process is gone.
+    // Declaration order matters: the heartbeat is declared after the record
+    // guard, so it stops before the record is removed and cannot resurrect it.
+    let _record_guard = ActiveRecordGuard {
+        storage: storage.clone(),
+        pid: my_pid,
+        observer: args.observer,
+    };
+    let _heartbeat = if args.observer {
+        None
+    } else {
+        Some(StateHeartbeat::start_lock(storage.clone(), my_pid))
+    };
 
     let theme = ColorTheme::new();
 
@@ -216,20 +244,31 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
         std::env::set_var("BQUE_ACTIVE_PID", my_pid.to_string());
     }
 
-    // Execute wrapped command
+    // Execute wrapped command. The record guard removes our state on every exit
+    // path, including errors and panics.
     let exit_code =
         execute_child_command(&args.command, args.cwd.as_deref(), job_object.as_deref())?;
-
-    // Cleanup state
-    if args.observer {
-        let _ = storage.unregister_observer(my_pid);
-    } else {
-        let _ = storage.clear_lock_state(Some(my_pid));
-    }
 
     crate::update::check_and_print_notice(&theme);
 
     Ok(exit_code)
+}
+
+/// Removes the active lock/observer record when the build ends, however it ends.
+struct ActiveRecordGuard {
+    storage: StateStorage,
+    pid: u32,
+    observer: bool,
+}
+
+impl Drop for ActiveRecordGuard {
+    fn drop(&mut self) {
+        let _ = if self.observer {
+            self.storage.unregister_observer(self.pid)
+        } else {
+            self.storage.clear_lock_state(Some(self.pid))
+        };
+    }
 }
 
 pub fn handle_status(args: StatusArgs) -> Result<()> {
@@ -277,7 +316,7 @@ pub fn handle_status(args: StatusArgs) -> Result<()> {
 
 pub fn handle_pause(args: PauseArgs) -> Result<()> {
     let storage = StateStorage::new()?;
-    let state = crate::state::PauseState {
+    let state = PauseState {
         paused_at: Utc::now(),
         reason: args.reason.clone(),
         paused_by_pid: std::process::id(),
@@ -301,14 +340,31 @@ pub fn handle_resume() -> Result<()> {
     Ok(())
 }
 
-pub fn handle_clean() -> Result<()> {
+pub fn handle_clean(args: CleanArgs) -> Result<()> {
     let storage = StateStorage::new()?;
-    let cleaned = storage.clean_dead_entries()?;
     let theme = ColorTheme::new();
+
+    if args.force {
+        let report = storage.force_clear()?;
+        println!(
+            "{} 🧹 Force-cleared queue state: {}.",
+            theme.badge_bque(),
+            theme.bold_cyan(&report.describe())
+        );
+        println!(
+            "  {} The kernel mutex remains authoritative: a live build keeps running,",
+            theme.bold_yellow("⚠️")
+        );
+        println!("     and the next waiter automatically recovers an abandoned lock.");
+        return Ok(());
+    }
+
+    let report = storage.reap()?;
     println!(
-        "{} 🧹 Cleaned {} dead/orphaned state records.",
+        "{} 🧹 Cleaned {} dead/orphaned state record(s): {}.",
         theme.badge_bque(),
-        theme.bold_cyan(&cleaned.to_string())
+        theme.bold_cyan(&report.total().to_string()),
+        theme.dim(&report.describe())
     );
     Ok(())
 }

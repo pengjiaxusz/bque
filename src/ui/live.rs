@@ -64,7 +64,16 @@ impl LiveProgressReporter {
             } else if let Some(pause) = &status.pause_state {
                 format!("Blocked by Pause '{}'", pause.reason)
             } else if let Some(lock) = &status.active_lock {
-                format!("Waiting for Lock Holder PID {}", lock.pid)
+                let held = (chrono::Utc::now().timestamp() - lock.start_time.timestamp()).max(0);
+                if held as u64 >= super::status::LONG_HOLD_HINT_SECS {
+                    format!(
+                        "Waiting for Lock Holder PID {} (already holding {}: dev servers should run with --observer)",
+                        lock.pid,
+                        format_duration_secs(held as u64)
+                    )
+                } else {
+                    format!("Waiting for Lock Holder PID {}", lock.pid)
+                }
             } else {
                 "Waiting for lock".to_string()
             };

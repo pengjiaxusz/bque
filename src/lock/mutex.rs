@@ -10,8 +10,29 @@ use windows_sys::Win32::Foundation::{
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
-pub const BUILD_MUTEX_NAME: &str = "Local\\Bque_Global_Build_Lock";
-pub const BENCH_MUTEX_NAME: &str = "Local\\Bque_Benchmark_Lock";
+/// Base names of the global kernel mutexes. The session-local `Local\` prefix
+/// makes them per-remote-session, which is what the queue wants.
+pub const BUILD_MUTEX_BASE: &str = "Bque_Global_Build_Lock";
+pub const BENCH_MUTEX_BASE: &str = "Bque_Benchmark_Lock";
+
+/// Namespace override used by tests (and by parallel experiments) so they can
+/// hold a private queue instead of the machine-wide one.
+pub const MUTEX_NAMESPACE_ENV: &str = "BQUE_MUTEX_NAMESPACE";
+
+pub fn build_mutex_name() -> String {
+    scoped_mutex_name(BUILD_MUTEX_BASE)
+}
+
+pub fn bench_mutex_name() -> String {
+    scoped_mutex_name(BENCH_MUTEX_BASE)
+}
+
+fn scoped_mutex_name(base: &str) -> String {
+    match std::env::var(MUTEX_NAMESPACE_ENV) {
+        Ok(namespace) if !namespace.is_empty() => format!("Local\\{}_{}", namespace, base),
+        _ => format!("Local\\{}", base),
+    }
+}
 
 pub struct NamedMutexGuard {
     #[cfg(windows)]

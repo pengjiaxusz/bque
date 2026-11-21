@@ -138,11 +138,25 @@ bque resume
 ```
 
 ### 5. Cleanup Stale Records (`bque clean`)
-Safely evicts orphaned waiter records or stale state files if a terminal was forcefully terminated:
+Every queue record is pinned to the process *instance* that wrote it — PID plus process creation time — and refreshed by a heartbeat, so an entry can never outlive its owner:
+
+- a dead owner is dropped the moment any `status`, `run` or `bench` consults the queue;
+- a **recycled PID** (the number now belongs to an unrelated process) is detected by the creation-time mismatch and dropped as well;
+- only when the process cannot be inspected at all (access denied) does the heartbeat lease decide.
+
+`bque clean` runs that same healing pass on demand and reports exactly what it removed:
 
 ```powershell
 bque clean
 ```
+
+If the queue is jammed by an entry you want gone right now, force a full reset:
+
+```powershell
+bque clean --force
+```
+
+`--force` also drops lock, benchmark and pause records whose owner still looks alive. The kernel mutex stays authoritative: a genuinely running build keeps running, and an abandoned lock is recovered by the next waiter.
 
 ---
 

@@ -1,11 +1,10 @@
 use crate::cli::BenchArgs;
 use crate::job::{CpuTopology, ProcessFreezer, apply_process_affinity, apply_process_priority};
-use crate::lock::{BENCH_MUTEX_NAME, NamedMutex};
+use crate::lock::{NamedMutex, bench_mutex_name};
 use crate::runner::execute_child_command;
-use crate::state::{BenchState, StateStorage};
+use crate::state::{BenchState, StateHeartbeat, StateStorage};
 use crate::ui::{ColorTheme, LiveProgressReporter};
 use anyhow::{Result, anyhow};
-use chrono::Utc;
 use std::time::Duration;
 
 pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
@@ -31,7 +30,7 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
     let theme = ColorTheme::new();
     let desc = args.desc.clone().unwrap_or_else(|| args.command.join(" "));
 
-    let bench_mutex = NamedMutex::new(BENCH_MUTEX_NAME);
+    let bench_mutex = NamedMutex::new(bench_mutex_name());
     let timeout = if args.timeout == 0 {
         Duration::ZERO
     } else {
@@ -42,6 +41,9 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
     let start_wait = std::time::Instant::now();
 
     let _guard = bench_mutex.acquire_with_progress(timeout, |elapsed| {
+        // Heal phantom records so a dead benchmark or waiter never keeps this
+        // run waiting.
+        let _ = storage.reap();
         if let Ok(status) = storage.get_full_status() {
             reporter.tick_bench(&status, elapsed.as_secs());
         }
@@ -84,14 +86,14 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
         }
     }
 
-    let state = BenchState {
-        pid: std::process::id(),
-        start_time: Utc::now(),
-        command: args.command.join(" "),
-        description: desc.clone(),
-        frozen_pids: frozen_pids.clone(),
-    };
+    let state = BenchState::record(
+        std::process::id(),
+        args.command.join(" "),
+        desc.clone(),
+        frozen_pids.clone(),
+    );
     storage.save_bench_state(&state)?;
+    let _heartbeat = StateHeartbeat::start_bench(storage.clone(), state.pid);
 
     // Apply benchmark priority (default: High)
     if let Err(e) = apply_process_priority(args.priority) {

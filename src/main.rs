@@ -34,8 +34,8 @@ fn main() -> anyhow::Result<()> {
             commands::handle_resume()?;
             0
         }
-        Commands::Clean => {
-            commands::handle_clean()?;
+        Commands::Clean(args) => {
+            commands::handle_clean(args)?;
             0
         }
         Commands::Update(args) => {

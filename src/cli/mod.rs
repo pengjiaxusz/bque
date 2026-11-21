@@ -31,7 +31,7 @@ pub enum Commands {
     Resume,
 
     /// Clean dead locks, orphaned waiter records, and zombie state files
-    Clean,
+    Clean(CleanArgs),
 
     /// Check for updates or upgrade bque to the latest version
     Update(UpdateArgs),
@@ -127,6 +127,14 @@ pub struct PauseArgs {
     /// Optional reason for manual pause
     #[arg(short = 'r', long, default_value = "Manual user pause")]
     pub reason: String,
+}
+
+#[derive(Args, Debug)]
+pub struct CleanArgs {
+    /// Also drop records whose owner still looks alive (emergency unblock).
+    /// The kernel mutex stays authoritative, so a running build is not interrupted.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
 }
 
 #[derive(Args, Debug)]

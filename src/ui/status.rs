@@ -2,6 +2,10 @@ use super::color::{ColorTheme, format_duration_secs, truncate_str};
 use crate::state::FullQueueStatus;
 use chrono::Utc;
 
+/// A holder older than this is almost always a dev server or watch loop that
+/// should have run as an observer instead of occupying the global lock.
+pub const LONG_HOLD_HINT_SECS: u64 = 30 * 60;
+
 pub fn render_full_dashboard(
     status: &FullQueueStatus,
     highlight_pid: Option<u32>,
@@ -91,6 +95,15 @@ pub fn render_full_dashboard(
             theme.dim("│"),
             theme.dim(&truncate_str(&lock.cwd, 50))
         ));
+        if elapsed >= LONG_HOLD_HINT_SECS {
+            body_lines.push(format!(
+                "{}     {}",
+                theme.dim("│"),
+                theme.yellow(
+                    "💡 Holder is long-running: dev servers and watch loops should use --observer"
+                )
+            ));
+        }
     } else {
         body_lines.push(format!(
             "{}  {}",
@@ -167,6 +180,24 @@ pub fn render_full_dashboard(
                 theme.white(&truncate_str(&obs.description, 40))
             ));
         }
+    }
+
+    // 6. Stale records reaped while building this snapshot
+    if !status.reaped.is_empty() {
+        body_lines.push(theme.dim("│"));
+        body_lines.push(format!(
+            "{}  {}",
+            theme.dim("│"),
+            theme.bold_yellow(&format!(
+                "🧹 AUTO-REAPED STALE RECORDS ({})",
+                status.reaped.total()
+            ))
+        ));
+        body_lines.push(format!(
+            "{}     Removed: {} (owner gone or PID recycled)",
+            theme.dim("│"),
+            theme.dim(&status.reaped.describe())
+        ));
     }
 
     // Determine target card width dynamically based on content
