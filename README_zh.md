@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/pengjiaxusz/bque)](https://github.com/pengjiaxusz/bque/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
-**bque**（Build Queue & Resource Governor）是一个专为 Windows 平台打造的高性能、无守护进程（Daemonless）系统级工具。用于协调多项目/多工作树间的繁重编译与后台任务排队，通过 Windows Job Object 实现动态 CPU 配额管控，并为基准测试（跑分/Profiling）提供完全纯净且不受干扰的 CPU 运行环境。
+**bque**（Build Queue & Resource Governor）是一个面向 Windows 与 Linux 平台的高性能、无守护进程（Daemonless）系统级工具。用于协调多项目/多工作树间的繁重编译与后台任务排队，通过 Windows Job Object 实现动态 CPU 配额管控，并为基准测试（跑分/Profiling）提供完全纯净且不受干扰的 CPU 运行环境。
 
 ---
 
@@ -50,13 +50,20 @@
 ## 安装方式
 
 ### 一键快速安装（推荐）
-在 PowerShell 中运行以下命令。**无需管理员权限**，自动下载最新发布版本、安装至 `$env:LOCALAPPDATA\bque\bin` 并自动配置 PATH，当前终端即刻生效：
+**Windows（PowerShell）**——**无需管理员权限**，自动下载安装至 `$env:LOCALAPPDATA\bque\bin` 并配置 `PATH`：
 ```powershell
 irm https://github.com/pengjiaxusz/bque/releases/latest/download/install.ps1 | iex
 ```
 
+**Linux（`x86_64`）**——自动下载静态编译二进制并安装至 `${XDG_DATA_HOME:-$HOME/.local/share}/bque/bin`（可通过 `BQUE_INSTALL_DIR` 自定义）：
+```sh
+curl -fsSL https://github.com/pengjiaxusz/bque/releases/latest/download/install.sh | sh
+```
+
 ### 预编译二进制下载
-直接前往 [GitHub Releases](https://github.com/pengjiaxusz/bque/releases/latest) 下载最新的 `bque-windows-x86_64.zip` 或 `bque.exe`，并将其所在目录（推荐 `$env:LOCALAPPDATA\bque\bin`）加入系统环境变量 `PATH` 即可。
+前往 [GitHub Releases](https://github.com/pengjiaxusz/bque/releases/latest) 下载：
+- **Windows (`x86_64`)**：`bque-windows-x86_64.zip` 或 `bque.exe`
+- **Linux (`x86_64`, 静态 musl)**：`bque-linux-x86_64.tar.gz` 或 `bque-linux-x86_64`
 
 ### 源码编译安装
 ```bash

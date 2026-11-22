@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/pengjiaxusz/bque)](https://github.com/pengjiaxusz/bque/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
-**bque** (Build Queue & Resource Governor) is a high-performance, daemonless system utility on Windows designed to coordinate heavy builds and background tasks across multiple projects, enforce dynamic CPU rate budgets via Windows Job Objects, and guarantee clean, undisturbed CPU conditions for benchmarks.
+**bque** (Build Queue & Resource Governor) is a high-performance, daemonless system utility for Windows and Linux designed to coordinate heavy builds and background tasks across multiple projects, control process scheduling and CPU budgets, and guarantee clean, undisturbed CPU conditions for benchmarks.
 
 ---
 
@@ -47,13 +47,20 @@ Benchmarking and profiling require a **completely clean CPU environment**:
 ## Installation
 
 ### One-Liner Quick Install (Recommended)
-Run the following command in PowerShell. It requires **no administrator privileges**, automatically downloads the latest release, installs it to `$env:LOCALAPPDATA\bque\bin`, updates your `PATH`, and takes effect immediately in the current session:
+**Windows (PowerShell)** — requires **no administrator privileges**, installs to `$env:LOCALAPPDATA\bque\bin`, and updates `PATH`:
 ```powershell
 irm https://github.com/pengjiaxusz/bque/releases/latest/download/install.ps1 | iex
 ```
 
+**Linux (`x86_64`)** — installs the static binary to `${XDG_DATA_HOME:-$HOME/.local/share}/bque/bin` (override with `BQUE_INSTALL_DIR`):
+```sh
+curl -fsSL https://github.com/pengjiaxusz/bque/releases/latest/download/install.sh | sh
+```
+
 ### Pre-built Binaries
-Download the latest `bque-windows-x86_64.zip` or `bque.exe` from [GitHub Releases](https://github.com/pengjiaxusz/bque/releases/latest) and place it in your tools directory (recommended: `$env:LOCALAPPDATA\bque\bin`), then add it to your system `PATH`.
+Download from [GitHub Releases](https://github.com/pengjiaxusz/bque/releases/latest):
+- **Windows (`x86_64`)**: `bque-windows-x86_64.zip` or `bque.exe`
+- **Linux (`x86_64`, static musl)**: `bque-linux-x86_64.tar.gz` or `bque-linux-x86_64`
 
 ### From Source
 ```bash
