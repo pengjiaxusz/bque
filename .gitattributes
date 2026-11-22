@@ -70,7 +70,7 @@ Cargo.lock linguist-generated=true
 # PENGJ_TEMPLATE_END
 
 # ---------------------------------------------------------------------------
-# 项目专属区：export-ignore 让源码包（git archive / GitHub tarball）不带工作区配置
+# Project-specific section: export-ignore keeps workspace configs out of source archives (git archive / GitHub tarball)
 # ---------------------------------------------------------------------------
 .gitattributes export-ignore
 .gitignore export-ignore
