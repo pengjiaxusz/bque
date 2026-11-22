@@ -6,16 +6,41 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  build-and-release:
-    name: Build & Publish Release
-    runs-on: windows-latest
-    permissions:
-      contents: write
+  prepare:
+    name: Determine Version & Tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      tag: ${{ steps.vars.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+
+      - name: Determine Version and Tag
+        id: vars
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${{ github.ref_name }}"
+            ver="${tag#v}"
+          else
+            ver=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+            ver="${ver:-0.1.0}"
+            tag="v${ver}"
+          fi
+          echo "Releasing version: $ver with tag: $tag"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build-windows:
+    name: Build Windows (x86_64)
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -23,43 +48,94 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Determine Version and Tag
-        id: vars
-        shell: pwsh
-        run: |
-          if ('${{ github.ref_type }}' -eq 'tag') {
-              $tag = '${{ github.ref_name }}'
-              $ver = $tag.TrimStart('v')
-          } else {
-              $content = Get-Content Cargo.toml -Raw
-              if ($content -match 'version\s*=\s*"([^"]+)"') {
-                  $ver = $matches[1]
-              } else {
-                  $ver = "0.1.0"
-              }
-              $tag = "v$ver"
-          }
-          Write-Host "Releasing version: $ver with tag: $tag"
-          echo "version=$ver" >> $env:GITHUB_OUTPUT
-          echo "tag=$tag" >> $env:GITHUB_OUTPUT
-
       - name: Build release binary
         run: cargo build --release
 
-      - name: Package artifacts & Generate Release Notes
+      - name: Package Windows artifacts
         shell: pwsh
         run: |
-          $tag = "${{ steps.vars.outputs.tag }}"
-          $zipName = "bque-$tag-windows-x86_64.zip"
-          $unversionedZip = "bque-windows-x86_64.zip"
+          $tag = "${{ needs.prepare.outputs.tag }}"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $zipName = "dist/bque-$tag-windows-x86_64.zip"
+          $unversionedZip = "dist/bque-windows-x86_64.zip"
           Compress-Archive -Path "target\release\bque.exe", "README.md", "README_zh.md" -DestinationPath $zipName -Force
           Copy-Item -Path $zipName -Destination $unversionedZip -Force
+          Copy-Item -Path "target\release\bque.exe" -Destination "dist/bque.exe" -Force
 
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/*
+
+  build-linux:
+    name: Build Linux (x86_64 musl)
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build static Linux binary
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Package Linux artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ needs.prepare.outputs.tag }}"
+          mkdir -p dist stage
+          cp target/x86_64-unknown-linux-musl/release/bque stage/bque
+          chmod +x stage/bque
+          cp README.md README_zh.md stage/
+          tar -C stage -czf "dist/bque-${tag}-linux-x86_64.tar.gz" bque README.md README_zh.md
+          cp "dist/bque-${tag}-linux-x86_64.tar.gz" "dist/bque-linux-x86_64.tar.gz"
+          cp stage/bque "dist/bque-linux-x86_64"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: dist/*
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [prepare, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-dist
+          merge-multiple: true
+
+      - name: Generate Release Notes & Checksums
+        shell: pwsh
+        run: |
+          $tag = "${{ needs.prepare.outputs.tag }}"
           $artifacts = @(
-              $zipName,
-              $unversionedZip,
-              "target\release\bque.exe",
-              "tools\install.ps1"
+              "release-dist/bque-$tag-windows-x86_64.zip",
+              "release-dist/bque-windows-x86_64.zip",
+              "release-dist/bque.exe",
+              "release-dist/bque-$tag-linux-x86_64.tar.gz",
+              "release-dist/bque-linux-x86_64.tar.gz",
+              "release-dist/bque-linux-x86_64",
+              "tools/install.ps1",
+              "tools/install.sh"
           )
 
           pwsh -NoProfile -File tools/generate-release-notes.ps1 `
@@ -68,19 +144,15 @@ jobs:
               -ChecksumFile "checksums-sha256.txt" `
               -Artifacts ($artifacts -join ',')
 
-          echo "zip_name=$zipName" >> $env:GITHUB_ENV
-          echo "unversioned_zip=$unversionedZip" >> $env:GITHUB_ENV
-
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.vars.outputs.tag }}
-          name: bque ${{ steps.vars.outputs.tag }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: bque ${{ needs.prepare.outputs.tag }}
           body_path: release_notes.md
           files: |
-            ${{ env.zip_name }}
-            ${{ env.unversioned_zip }}
-            target/release/bque.exe
+            release-dist/*
             tools/install.ps1
+            tools/install.sh
             checksums-sha256.txt
           make_latest: true

@@ -8,10 +8,22 @@ on:
 
 jobs:
   check-and-test:
-    name: Build & Test (Windows)
-    runs-on: windows-latest
+    name: Build & Test (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows
+            os: windows-latest
+          - label: Linux
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Linux linker (lld)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y lld
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
