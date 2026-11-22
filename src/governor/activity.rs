@@ -37,6 +37,25 @@ fn filetime_to_u64(ft: FILETIME) -> u64 {
     ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64)
 }
 
+#[cfg(target_os = "linux")]
+fn read_linux_cpu_times() -> Option<(u64, u64)> {
+    let content = std::fs::read_to_string("/proc/stat").ok()?;
+    let cpu_line = content.lines().next()?;
+    let mut parts = cpu_line.split_whitespace();
+    if parts.next()? != "cpu" {
+        return None;
+    }
+
+    let values: Vec<u64> = parts.filter_map(|v| v.parse::<u64>().ok()).collect();
+    if values.len() < 4 {
+        return None;
+    }
+
+    let idle = values[3].saturating_add(values.get(4).copied().unwrap_or(0));
+    let total: u64 = values.iter().copied().sum();
+    Some((idle, total))
+}
+
 /// Samples the overall system CPU utilization over a brief measurement window.
 pub fn sample_system_cpu_load(sample_duration: Duration) -> Option<f64> {
     #[cfg(windows)]
@@ -72,7 +91,24 @@ pub fn sample_system_cpu_load(sample_duration: Duration) -> Option<f64> {
         let usage = (busy_delta as f64) / (total_delta as f64);
         Some(usage.clamp(0.0, 1.0))
     }
-    #[cfg(not(windows))]
+
+    #[cfg(target_os = "linux")]
+    {
+        let (idle1, total1) = read_linux_cpu_times()?;
+        std::thread::sleep(sample_duration);
+        let (idle2, total2) = read_linux_cpu_times()?;
+
+        let total_delta = total2.saturating_sub(total1);
+        if total_delta == 0 {
+            return None;
+        }
+        let idle_delta = idle2.saturating_sub(idle1);
+        let busy_delta = total_delta.saturating_sub(idle_delta);
+        let usage = (busy_delta as f64) / (total_delta as f64);
+        Some(usage.clamp(0.0, 1.0))
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux")))]
     {
         let _ = sample_duration;
         None
@@ -108,7 +144,7 @@ mod tests {
 
     #[test]
     fn test_cpu_sampling_returns_value() {
-        if cfg!(windows) {
+        if cfg!(any(windows, target_os = "linux")) {
             let load = sample_system_cpu_load(Duration::from_millis(50));
             assert!(load.is_some());
             let val = load.unwrap();

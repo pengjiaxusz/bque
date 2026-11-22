@@ -1,4 +1,6 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
+#[cfg(windows)]
+use anyhow::anyhow;
 
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
@@ -76,7 +78,28 @@ impl ProcessFreezer {
             Ok(suspended)
         }
 
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        {
+            if root_pid == 0 || root_pid > i32::MAX as u32 {
+                return Ok(Vec::new());
+            }
+            let mut pids = vec![root_pid];
+            pids.extend(find_child_pids_linux(root_pid));
+
+            let mut suspended = Vec::new();
+            for &pid in &pids {
+                if pid == 0 || pid > i32::MAX as u32 {
+                    continue;
+                }
+                let res = unsafe { libc::kill(pid as libc::pid_t, libc::SIGSTOP) };
+                if res == 0 {
+                    suspended.push(pid);
+                }
+            }
+            Ok(suspended)
+        }
+
+        #[cfg(all(not(windows), not(target_os = "linux")))]
         {
             let _ = root_pid;
             Ok(vec![])
@@ -106,7 +129,22 @@ impl ProcessFreezer {
             Ok(resumed_count)
         }
 
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        {
+            let mut resumed_count = 0;
+            for &pid in pids {
+                if pid == 0 || pid > i32::MAX as u32 {
+                    continue;
+                }
+                let res = unsafe { libc::kill(pid as libc::pid_t, libc::SIGCONT) };
+                if res == 0 {
+                    resumed_count += 1;
+                }
+            }
+            Ok(resumed_count)
+        }
+
+        #[cfg(all(not(windows), not(target_os = "linux")))]
         {
             let _ = pids;
             Ok(0)
@@ -141,4 +179,49 @@ fn find_child_pids(parent_pid: u32) -> Vec<u32> {
         CloseHandle(snapshot);
     }
     children
+}
+
+#[cfg(target_os = "linux")]
+fn find_child_pids_linux(root_pid: u32) -> Vec<u32> {
+    use std::collections::{HashMap, VecDeque};
+
+    let mut children_by_parent: HashMap<u32, Vec<u32>> = HashMap::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid_str) = name.to_str() else {
+            continue;
+        };
+        let Ok(pid) = pid_str.parse::<u32>() else {
+            continue;
+        };
+        if let Some(ppid) = read_ppid_linux(pid) {
+            children_by_parent.entry(ppid).or_default().push(pid);
+        }
+    }
+
+    let mut descendants = Vec::new();
+    let mut queue = VecDeque::new();
+    queue.push_back(root_pid);
+    while let Some(parent) = queue.pop_front() {
+        if let Some(kids) = children_by_parent.get(&parent) {
+            for &kid in kids {
+                descendants.push(kid);
+                queue.push_back(kid);
+            }
+        }
+    }
+    descendants
+}
+
+#[cfg(target_os = "linux")]
+fn read_ppid_linux(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    let close_paren = stat.rfind(')')?;
+    let rest = stat[close_paren + 1..].trim_start();
+    // After ')': field 3 = state (index 0), field 4 = ppid (index 1).
+    rest.split_whitespace().nth(1)?.parse::<u32>().ok()
 }

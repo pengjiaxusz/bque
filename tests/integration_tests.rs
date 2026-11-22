@@ -2,6 +2,17 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Return platform-appropriate shell invocation arguments for running `script`.
+#[cfg(windows)]
+fn shell_args(script: &str) -> [&str; 3] {
+    ["cmd.exe", "/c", script]
+}
+
+#[cfg(not(windows))]
+fn shell_args(script: &str) -> [&str; 3] {
+    ["sh", "-c", script]
+}
+
 /// Isolates each test in its own queue: a private state directory and a private
 /// kernel mutex namespace, so a test can hold, block and jam a queue without
 /// touching the real machine-wide one.
@@ -169,17 +180,11 @@ fn test_cli_help() {
 #[test]
 fn test_exit_code_propagation() {
     let harness = Harness::new("exit_code");
+    let sh = shell_args("exit 42");
     let output = harness
         .cmd()
-        .args([
-            "run",
-            "--desc",
-            "Exit 42 Test",
-            "--",
-            "cmd.exe",
-            "/c",
-            "exit 42",
-        ])
+        .args(["run", "--desc", "Exit 42 Test", "--"])
+        .args(sh)
         .output()
         .expect("Failed to execute bque run");
     assert_eq!(output.status.code(), Some(42));
@@ -217,6 +222,7 @@ fn test_pause_and_resume_cycle() {
 #[test]
 fn test_benchmark_clean_execution() {
     let harness = Harness::new("bench_run");
+    let sh = shell_args("echo BENCH_OK");
     let output = harness
         .cmd()
         .args([
@@ -225,10 +231,8 @@ fn test_benchmark_clean_execution() {
             "Bench Test",
             "--freeze-builds=false",
             "--",
-            "cmd.exe",
-            "/c",
-            "echo BENCH_OK",
         ])
+        .args(sh)
         .output()
         .expect("Failed to run bench");
     assert!(output.status.success());
@@ -241,11 +245,13 @@ fn test_benchmark_clean_execution() {
 fn test_reentrancy_bypass() {
     let harness = Harness::new("reentrancy");
     let current_pid = std::process::id().to_string();
+    let sh = shell_args("echo REENTRANT_BYPASS_OK");
 
     let output = harness
         .cmd()
         .env("BQUE_ACTIVE_PID", current_pid)
-        .args(["run", "--", "cmd.exe", "/c", "echo REENTRANT_BYPASS_OK"])
+        .args(["run", "--"])
+        .args(sh)
         .output()
         .expect("Failed to run reentrant bque");
     assert!(output.status.success());
@@ -342,17 +348,11 @@ fn test_blocked_by_pause_notification() {
         .expect("pause failed");
     assert!(p_out.status.success());
 
+    let sh = shell_args("echo should_not_run");
     let run_out = harness
         .cmd()
-        .args([
-            "run",
-            "--timeout",
-            "1",
-            "--",
-            "cmd.exe",
-            "/c",
-            "echo should_not_run",
-        ])
+        .args(["run", "--timeout", "1", "--"])
+        .args(sh)
         .output()
         .expect("run failed");
 
@@ -388,6 +388,54 @@ fn test_update_check_command() {
             || combined.contains("up to date")
             || combined.contains("version is available")
             || combined.contains("Failed to check")
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_concurrent_runs_are_serialized() {
+    let harness = Harness::new("serialize");
+    let log_path = harness.state_path("order.log");
+    let script1 = format!(
+        "echo first_start >> '{0}'; sleep 0.6; echo first_end >> '{0}'",
+        log_path.display()
+    );
+    let script2 = format!("echo second_start >> '{}'", log_path.display());
+
+    let mut first = harness
+        .cmd()
+        .args(["run", "--no-governor", "--", "sh", "-c", &script1])
+        .spawn()
+        .expect("spawn first bque run");
+
+    // Wait briefly so the first run acquires the flock before the second starts.
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    let second = harness
+        .cmd()
+        .args([
+            "run",
+            "--no-governor",
+            "--timeout",
+            "10",
+            "--",
+            "sh",
+            "-c",
+            &script2,
+        ])
+        .output()
+        .expect("run second bque run");
+
+    let first_status = first.wait().expect("wait for first bque run");
+    assert!(first_status.success(), "first run failed");
+    assert!(second.status.success(), "second run failed");
+
+    let log = std::fs::read_to_string(&log_path).expect("read order log");
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["first_start", "first_end", "second_start"],
+        "second run must wait until first run releases the lock"
     );
 }
 
@@ -440,17 +488,11 @@ fn test_recycled_pid_benchmark_does_not_block_builds() {
     );
 
     let started = SystemTime::now();
+    let sh = shell_args("echo BUILD_RAN");
     let output = harness
         .cmd()
-        .args([
-            "run",
-            "--timeout",
-            "20",
-            "--",
-            "cmd.exe",
-            "/c",
-            "echo BUILD_RAN",
-        ])
+        .args(["run", "--timeout", "20", "--"])
+        .args(sh)
         .output()
         .expect("run failed");
     let elapsed = started.elapsed().unwrap_or_default();
@@ -484,17 +526,11 @@ fn test_dead_lock_holder_does_not_block_new_builds() {
     assert!(val["active_lock"].is_null());
     assert!(val["waiters"].as_array().unwrap().is_empty());
 
+    let sh = shell_args("echo UNBLOCKED");
     let output = harness
         .cmd()
-        .args([
-            "run",
-            "--timeout",
-            "20",
-            "--",
-            "cmd.exe",
-            "/c",
-            "echo UNBLOCKED",
-        ])
+        .args(["run", "--timeout", "20", "--"])
+        .args(sh)
         .output()
         .expect("run failed");
     let combined = format!(

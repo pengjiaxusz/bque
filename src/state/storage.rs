@@ -244,12 +244,39 @@ pub struct StateStorage {
     root_dir: PathBuf,
 }
 
+/// Resolve the state directory used for queue records and lock files.
+///
+/// Precedence:
+/// 1. `BQUE_STATE_DIR` environment override.
+/// 2. On Unix, `XDG_RUNTIME_DIR/bque` if set, otherwise `<temp_dir>/bque-<uid>`.
+/// 3. On Windows, `<temp_dir>/bque`.
+pub fn resolve_state_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os(STATE_DIR_ENV)
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
+    }
+
+    #[cfg(unix)]
+    {
+        if let Some(runtime_dir) = std::env::var_os("XDG_RUNTIME_DIR")
+            && !runtime_dir.is_empty()
+        {
+            return PathBuf::from(runtime_dir).join("bque");
+        }
+        let uid = unsafe { libc::geteuid() };
+        std::env::temp_dir().join(format!("bque-{}", uid))
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::env::temp_dir().join("bque")
+    }
+}
+
 impl StateStorage {
     pub fn new() -> Result<Self> {
-        let root = match std::env::var_os(STATE_DIR_ENV) {
-            Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-            _ => std::env::temp_dir().join("bque"),
-        };
+        let root = resolve_state_dir();
         fs::create_dir_all(&root).context("Failed to create bque state directory")?;
         fs::create_dir_all(root.join("waiters")).context("Failed to create waiters directory")?;
         fs::create_dir_all(root.join("observers"))

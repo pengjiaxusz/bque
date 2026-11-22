@@ -1,6 +1,12 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
+#[cfg(windows)]
+use anyhow::anyhow;
+#[cfg(windows)]
 use std::ffi::OsStr;
+#[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicI32, Ordering};
 
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
@@ -15,6 +21,10 @@ use windows_sys::Win32::System::JobObjects::{
 pub struct JobObject {
     #[cfg(windows)]
     handle: HANDLE,
+    /// On Unix, tracks the child process group ID (PGID) so that dropping the
+    /// job cleans up the entire descendant process group.
+    #[cfg(unix)]
+    pgid: AtomicI32,
 }
 
 unsafe impl Send for JobObject {}
@@ -63,7 +73,15 @@ impl JobObject {
             Ok(Self { handle })
         }
 
-        #[cfg(not(windows))]
+        #[cfg(unix)]
+        {
+            let _ = name;
+            Ok(Self {
+                pgid: AtomicI32::new(0),
+            })
+        }
+
+        #[cfg(all(not(windows), not(unix)))]
         {
             let _ = name;
             Ok(Self {})
@@ -89,11 +107,25 @@ impl JobObject {
             Ok(())
         }
 
-        #[cfg(not(windows))]
+        #[cfg(unix)]
+        {
+            if process_handle > 0 && process_handle <= i32::MAX as isize {
+                self.pgid.store(process_handle as i32, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+
+        #[cfg(all(not(windows), not(unix)))]
         {
             let _ = process_handle;
             Ok(())
         }
+    }
+
+    /// Clear the tracked process group once the child has exited cleanly.
+    #[cfg(unix)]
+    pub fn clear_process(&self) {
+        self.pgid.store(0, Ordering::SeqCst);
     }
 
     pub fn set_cpu_rate(&self, rate_percent: u32, hard_cap: bool) -> Result<()> {
@@ -141,6 +173,17 @@ impl Drop for JobObject {
         unsafe {
             if !self.handle.is_null() {
                 CloseHandle(self.handle);
+            }
+        }
+        #[cfg(unix)]
+        {
+            let pgid = self.pgid.swap(0, Ordering::SeqCst);
+            if pgid > 0 {
+                // Terminate the entire process group if the job is dropped before
+                // the child exited normally.
+                unsafe {
+                    libc::kill(-pgid, libc::SIGTERM);
+                }
             }
         }
     }
