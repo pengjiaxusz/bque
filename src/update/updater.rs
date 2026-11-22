@@ -1,7 +1,19 @@
-use super::checker::{clean_old_binaries, fetch_remote_latest_version, is_newer_version};
+use super::checker::{
+    clean_old_binaries, fetch_remote_latest_version, is_newer_version, sidecar_binary_path,
+};
 use crate::cli::UpdateArgs;
 use crate::ui::ColorTheme;
 use anyhow::{Result, anyhow};
+
+fn release_binary_asset() -> Option<&'static str> {
+    if cfg!(windows) {
+        Some("bque.exe")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("bque-linux-x86_64")
+    } else {
+        None
+    }
+}
 
 pub fn handle_update(args: UpdateArgs) -> Result<()> {
     let theme = ColorTheme::new();
@@ -61,37 +73,52 @@ pub fn handle_update(args: UpdateArgs) -> Result<()> {
     );
 
     let current_exe = std::env::current_exe()?;
-    let temp_download = current_exe.with_extension("exe.download");
-    let old_exe = current_exe.with_extension("exe.old");
+    let temp_download = sidecar_binary_path(&current_exe, ".download");
+    let old_exe = sidecar_binary_path(&current_exe, ".old");
 
-    let download_url = if let Some(tag) = &args.tag {
-        format!(
-            "https://github.com/pengjiaxusz/bque/releases/download/{}/bque.exe",
-            tag
-        )
+    let download_ok = if let Some(asset) = release_binary_asset() {
+        let download_url = if let Some(tag) = &args.tag {
+            format!(
+                "https://github.com/pengjiaxusz/bque/releases/download/{}/{}",
+                tag, asset
+            )
+        } else {
+            format!(
+                "https://github.com/pengjiaxusz/bque/releases/latest/download/{}",
+                asset
+            )
+        };
+
+        println!("--> Downloading {}...", theme.dim(&download_url));
+
+        let curl_bin = if cfg!(windows) { "curl.exe" } else { "curl" };
+        match std::process::Command::new(curl_bin)
+            .args([
+                "-fLs",
+                "--connect-timeout",
+                "10",
+                "-o",
+                temp_download.to_string_lossy().as_ref(),
+                &download_url,
+            ])
+            .status()
+        {
+            Ok(s) => s.success() && temp_download.exists(),
+            Err(_) => false,
+        }
     } else {
-        "https://github.com/pengjiaxusz/bque/releases/latest/download/bque.exe".to_string()
-    };
-
-    println!("--> Downloading {}...", theme.dim(&download_url));
-
-    let download_ok = match std::process::Command::new("curl.exe")
-        .args([
-            "-fLs",
-            "--connect-timeout",
-            "10",
-            "-o",
-            temp_download.to_string_lossy().as_ref(),
-            &download_url,
-        ])
-        .status()
-    {
-        Ok(s) => s.success() && temp_download.exists(),
-        Err(_) => false,
+        false
     };
 
     if download_ok {
-        // Safe hot-swap on Windows: rename running exe to .old, move downloaded to target
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o755);
+            std::fs::set_permissions(&temp_download, perms)?;
+        }
+
+        // Safe hot-swap: rename running binary to .old, move downloaded binary into place
         if old_exe.exists() {
             let _ = std::fs::remove_file(&old_exe);
         }
@@ -136,7 +163,14 @@ pub fn handle_update(args: UpdateArgs) -> Result<()> {
         return Ok(());
     }
 
+    let manual_cmd = if cfg!(windows) {
+        "irm https://github.com/pengjiaxusz/bque/releases/latest/download/install.ps1 | iex"
+    } else {
+        "curl -fsSL https://github.com/pengjiaxusz/bque/releases/latest/download/install.sh | sh"
+    };
+
     Err(anyhow!(
-        "Failed to update bque. You can update manually using:\n  irm https://github.com/pengjiaxusz/bque/releases/latest/download/install.ps1 | iex"
+        "Failed to update bque. You can update manually using:\n  {}",
+        manual_cmd
     ))
 }

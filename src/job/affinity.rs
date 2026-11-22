@@ -50,10 +50,19 @@ impl CpuTopology {
             (1usize << num_cpus) - 1
         };
 
+        let (p_mask, e_mask) = if num_cpus >= 12 && num_cpus < usize::BITS as usize {
+            let half = num_cpus / 2;
+            let p = (1usize << (num_cpus - half)) - 1;
+            let e = mask & !p;
+            (p, e)
+        } else {
+            (mask, mask)
+        };
+
         Self {
             total_logical_cores: num_cpus,
-            p_cores_mask: mask,
-            e_cores_mask: mask,
+            p_cores_mask: p_mask,
+            e_cores_mask: e_mask,
         }
     }
 
@@ -115,7 +124,28 @@ pub fn apply_process_affinity(affinity_mask: usize) -> Result<()> {
         Ok(())
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut set);
+        for cpu in 0..(usize::BITS as usize) {
+            if (affinity_mask & (1usize << cpu)) != 0 {
+                libc::CPU_SET(cpu, &mut set);
+            }
+        }
+        let res = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
+        if res != 0 {
+            let err = std::io::Error::last_os_error();
+            return Err(anyhow!(
+                "Failed to set process affinity mask 0x{:X}: {}",
+                affinity_mask,
+                err
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux")))]
     {
         let _ = affinity_mask;
         Ok(())

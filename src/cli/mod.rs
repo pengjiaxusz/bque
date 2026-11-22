@@ -4,7 +4,7 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(
     name = "bque",
-    about = "Universal build queue, CPU governor, and clean-room benchmark protector for Windows",
+    about = "Universal build queue, CPU governor, and clean-room benchmark protector for Windows and Linux",
     version,
     long_about = "bque serializes builds and heavy tasks across multiple repositories, adjusts process priorities, throttles CPU usage via Job Objects, and guarantees clean, undisturbed CPU conditions for benchmarks."
 )]

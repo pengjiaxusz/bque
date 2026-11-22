@@ -1,7 +1,7 @@
 use crate::ui::ColorTheme;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const DEFAULT_CHECK_INTERVAL_HOURS: i64 = 24;
 const DEFAULT_NOTIFY_INTERVAL_HOURS: i64 = 24;
@@ -14,15 +14,34 @@ pub struct UpdateCache {
 }
 
 pub fn get_cache_path() -> PathBuf {
+    #[cfg(windows)]
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
         let dir = PathBuf::from(local_app_data).join("bque");
         let _ = std::fs::create_dir_all(&dir);
-        dir.join("update_cache.json")
-    } else {
-        let dir = std::env::temp_dir().join("bque");
-        let _ = std::fs::create_dir_all(&dir);
-        dir.join("update_cache.json")
+        return dir.join("update_cache.json");
     }
+
+    #[cfg(unix)]
+    {
+        if let Some(xdg_cache) = std::env::var_os("XDG_CACHE_HOME")
+            && !xdg_cache.is_empty()
+        {
+            let dir = PathBuf::from(xdg_cache).join("bque");
+            let _ = std::fs::create_dir_all(&dir);
+            return dir.join("update_cache.json");
+        }
+        if let Some(home) = std::env::var_os("HOME")
+            && !home.is_empty()
+        {
+            let dir = PathBuf::from(home).join(".cache").join("bque");
+            let _ = std::fs::create_dir_all(&dir);
+            return dir.join("update_cache.json");
+        }
+    }
+
+    let dir = std::env::temp_dir().join("bque");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("update_cache.json")
 }
 
 pub fn load_cache() -> Option<UpdateCache> {
@@ -55,12 +74,18 @@ pub fn is_newer_version(current: &str, remote: &str) -> bool {
 }
 
 pub fn fetch_remote_latest_version() -> Option<String> {
-    // 1. Try curl.exe with HEAD redirect (instant, zero rate-limit)
-    if let Ok(output) = std::process::Command::new("curl.exe")
+    let (curl_bin, null_sink) = if cfg!(windows) {
+        ("curl.exe", "NUL")
+    } else {
+        ("curl", "/dev/null")
+    };
+
+    // 1. Try curl with HEAD redirect (instant, zero rate-limit)
+    if let Ok(output) = std::process::Command::new(curl_bin)
         .args([
             "-ILs",
             "-o",
-            "NUL",
+            null_sink,
             "-w",
             "%{url_effective}",
             "--max-time",
@@ -195,10 +220,16 @@ pub fn check_and_print_notice(theme: &ColorTheme) {
     }
 }
 
+pub(crate) fn sidecar_binary_path(exe: &Path, suffix: &str) -> PathBuf {
+    let mut os = exe.as_os_str().to_os_string();
+    os.push(suffix);
+    PathBuf::from(os)
+}
+
 /// Automatically removes leftover `.old` executables from previous updates.
 pub fn clean_old_binaries() {
     if let Ok(current_exe) = std::env::current_exe() {
-        let old_exe = current_exe.with_extension("exe.old");
+        let old_exe = sidecar_binary_path(&current_exe, ".old");
         if old_exe.exists() {
             let _ = std::fs::remove_file(old_exe);
         }

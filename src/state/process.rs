@@ -1,7 +1,7 @@
 //! Process identity for queue records.
 //!
-//! A PID is *not* an identity on Windows: the kernel recycles the number as soon
-//! as the process object is released. A state record that only remembers `pid`
+//! A PID is *not* an identity on Windows or Linux: the kernel recycles the
+//! number once the process is reaped. A state record that only remembers `pid`
 //! therefore has two failure modes, and both of them are silent:
 //!
 //! * the owner exits and its PID is handed to an unrelated process, so the dead
@@ -166,11 +166,100 @@ fn filetime_to_epoch_millis(ft: windows_sys::Win32::Foundation::FILETIME) -> u64
     (ticks / 10_000).saturating_sub(FILETIME_UNIX_EPOCH_OFFSET_MS)
 }
 
+#[cfg(windows)]
 const FILETIME_UNIX_EPOCH_OFFSET_MS: u64 = 11_644_473_600_000;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn probe(pid: u32) -> Probe {
-    // bque is a Windows-only global lock; elsewhere records fall back to leases.
+    use std::io::ErrorKind;
+
+    // Guard against invalid or negative pid_t conversions (kill(-pid, 0) targets a pgrp).
+    if pid == 0 || pid > i32::MAX as u32 {
+        return Probe::Gone;
+    }
+
+    let stat_path = format!("/proc/{}/stat", pid);
+    let content = match std::fs::read_to_string(&stat_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Probe::Gone,
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+            return probe_kill_fallback(pid);
+        }
+        Err(_) => return probe_kill_fallback(pid),
+    };
+
+    // Field 2 (comm) is wrapped in parentheses and may contain spaces or ')'.
+    // Everything after the last ')' starts at field 3 (process state).
+    let Some(close_paren) = content.rfind(')') else {
+        return Probe::Inaccessible;
+    };
+    let rest = content[close_paren + 1..].trim_start();
+    let mut fields = rest.split_whitespace();
+
+    // Field 3: state ('Z' = zombie, 'X'/'x' = dead).
+    let Some(state) = fields.next() else {
+        return Probe::Inaccessible;
+    };
+    if matches!(state, "Z" | "X" | "x") {
+        return Probe::Gone;
+    }
+
+    // Field 22 (starttime in clock ticks since boot) is index 18 after consuming field 3.
+    let Some(starttime_str) = fields.nth(18) else {
+        return Probe::Inaccessible;
+    };
+    let Ok(starttime_ticks) = starttime_str.parse::<u64>() else {
+        return Probe::Inaccessible;
+    };
+
+    let Some(btime_secs) = boot_time_secs() else {
+        return Probe::Inaccessible;
+    };
+    let ticks_per_sec = clock_ticks_per_sec();
+    let offset_ms = starttime_ticks.saturating_mul(1_000) / ticks_per_sec;
+    let created_at_ms = btime_secs.saturating_mul(1_000).saturating_add(offset_ms);
+    Probe::Born(created_at_ms)
+}
+
+#[cfg(target_os = "linux")]
+fn probe_kill_fallback(pid: u32) -> Probe {
+    let res = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if res == 0 {
+        return Probe::Inaccessible;
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::EPERM) => Probe::Inaccessible,
+        _ => Probe::Gone,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn boot_time_secs() -> Option<u64> {
+    use std::sync::OnceLock;
+    static BTIME: OnceLock<Option<u64>> = OnceLock::new();
+    *BTIME.get_or_init(|| {
+        let stat = std::fs::read_to_string("/proc/stat").ok()?;
+        for line in stat.lines() {
+            if let Some(rest) = line.strip_prefix("btime ") {
+                return rest.trim().parse::<u64>().ok();
+            }
+        }
+        None
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn clock_ticks_per_sec() -> u64 {
+    use std::sync::OnceLock;
+    static CLK_TCK: OnceLock<u64> = OnceLock::new();
+    *CLK_TCK.get_or_init(|| {
+        let val = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        if val > 0 { val as u64 } else { 100 }
+    })
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
+fn probe(pid: u32) -> Probe {
     let _ = pid;
     Probe::Inaccessible
 }

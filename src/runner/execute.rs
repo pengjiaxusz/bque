@@ -1,8 +1,33 @@
 use crate::job::JobObject;
 use anyhow::{Context, Result, anyhow};
+#[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::process::{Command, Stdio};
+
+#[cfg(unix)]
+use std::sync::Once;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicI32, Ordering};
+
+#[cfg(unix)]
+static ACTIVE_CHILD_PGID: AtomicI32 = AtomicI32::new(0);
+#[cfg(unix)]
+static SIGNAL_HANDLER_INIT: Once = Once::new();
+
+#[cfg(unix)]
+fn install_signal_forwarder() {
+    SIGNAL_HANDLER_INIT.call_once(|| {
+        let _ = ctrlc::set_handler(|| {
+            let pgid = ACTIVE_CHILD_PGID.load(Ordering::SeqCst);
+            if pgid > 0 {
+                unsafe {
+                    libc::kill(-pgid, libc::SIGTERM);
+                }
+            }
+        });
+    });
+}
 
 #[cfg(windows)]
 fn resolve_program(program: &str) -> std::path::PathBuf {
@@ -102,9 +127,32 @@ pub fn execute_child_command(
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        install_signal_forwarder();
+        // Place the child in its own process group so signals and cleanup
+        // reach every descendant compiler process.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+
     let mut child = cmd
         .spawn()
         .with_context(|| format!("Failed to start child process '{}'", program))?;
+
+    #[cfg(unix)]
+    let child_pgid = child.id() as i32;
+
+    #[cfg(unix)]
+    ACTIVE_CHILD_PGID.store(child_pgid, Ordering::SeqCst);
 
     if let Some(job) = job_object {
         #[cfg(windows)]
@@ -117,12 +165,35 @@ pub fn execute_child_command(
                 );
             }
         }
+        #[cfg(unix)]
+        {
+            let _ = job.assign_process(child_pgid as isize);
+        }
     }
 
     let status = child
         .wait()
         .with_context(|| format!("Error while waiting for child process '{}'", program))?;
 
+    #[cfg(unix)]
+    {
+        ACTIVE_CHILD_PGID.store(0, Ordering::SeqCst);
+        if let Some(job) = job_object {
+            job.clear_process();
+        }
+    }
+
+    #[cfg(unix)]
+    let exit_code = {
+        use std::os::unix::process::ExitStatusExt;
+        status
+            .code()
+            .or_else(|| status.signal().map(|sig| 128 + sig))
+            .unwrap_or(-1)
+    };
+
+    #[cfg(not(unix))]
     let exit_code = status.code().unwrap_or(-1);
+
     Ok(exit_code)
 }
