@@ -7,16 +7,22 @@
 git clone https://github.com/pengjiaxusz/bque.git
 ```
 
-## 2. Environment Check
+## 2. Environment Check & Setup
 
-Run the bootstrap script to inspect your local environment (read-only by default; never downloads or modifies tools automatically):
-
-```sh
-# Linux / macOS
-sh .pengj-templates/scripts/doctor.sh
-# Windows
-.pengj-templates\scripts\doctor.cmd
-```
+- Personal workstation (read-only check; never downloads or modifies tools):
+  ```sh
+  # Linux / macOS
+  sh .pengj-templates/scripts/doctor.sh
+  # Windows
+  .pengj-templates\scripts\doctor.cmd
+  ```
+- Fresh VM / CI / automated environment (one-shot setup; add `--dry-run` to preview):
+  ```sh
+  # Linux / macOS
+  sh .pengj-templates/scripts/setup.sh
+  # Windows
+  .pengj-templates\scripts\setup.cmd
+  ```
 <!-- PENGJ_TEMPLATE_END -->
 
 <!-- Project-specific contribution notes go below (outside the block; 100% preserved on template updates). -->
