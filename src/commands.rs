@@ -1,7 +1,8 @@
-use crate::cli::{CleanArgs, PauseArgs, RunArgs, StatusArgs};
+use crate::cli::{CleanArgs, LowResourcePolicy, PauseArgs, ProbeArgs, RunArgs, StatusArgs};
 use crate::governor::{ActivityGovernorConfig, GovernorWorker, evaluate_target_cpu_rate};
 use crate::job::{CpuTopology, JobObject, apply_process_affinity, apply_process_priority};
 use crate::lock::{NamedMutex, build_mutex_name};
+use crate::probe::{evaluate_preflight, format_probe_summary, probe_host};
 use crate::runner::execute_child_command;
 use crate::state::{
     LockState, PauseState, StateHeartbeat, StateStorage, WaiterState, is_pid_alive,
@@ -14,9 +15,63 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+const PREFLIGHT_DENIED_EXIT_CODE: i32 = 2;
+
+pub fn handle_probe(args: ProbeArgs) -> Result<()> {
+    let profile = probe_host(args.path.as_deref())?;
+    if args.json {
+        let out = serde_json::to_string_pretty(&profile)?;
+        println!("{}", out);
+        return Ok(());
+    }
+
+    let theme = ColorTheme::new();
+    println!("{}", format_probe_summary(&profile, &theme));
+    Ok(())
+}
+
 pub fn handle_run(args: RunArgs) -> Result<i32> {
     if args.command.is_empty() {
         return Err(anyhow!("No command specified to run"));
+    }
+
+    let theme = ColorTheme::new();
+
+    if args.min_cores.is_some() || args.min_ram_mb.is_some() {
+        let profile = probe_host(args.cwd.as_deref())?;
+        let violations = evaluate_preflight(&profile, args.min_cores, args.min_ram_mb);
+        if !violations.is_empty() {
+            let reason = violations.join("; ");
+            match args.on_low_resource {
+                LowResourcePolicy::Warn => {
+                    eprintln!(
+                        "{} {} Preflight resource check warning: {}",
+                        theme.badge_bque(),
+                        theme.bold_yellow("WARN"),
+                        reason
+                    );
+                    eprintln!("{}", format_probe_summary(&profile, &theme));
+                    eprintln!(
+                        "{} Continuing execution because --on-low-resource=warn.",
+                        theme.badge_bque()
+                    );
+                }
+                LowResourcePolicy::Deny => {
+                    eprintln!(
+                        "{} {} Preflight resource check failed: {}",
+                        theme.badge_bque(),
+                        theme.bold_red("DENIED"),
+                        reason
+                    );
+                    eprintln!("{}", format_probe_summary(&profile, &theme));
+                    eprintln!(
+                        "{} Refusing to start command because --on-low-resource=deny.",
+                        theme.badge_bque()
+                    );
+                    return Ok(PREFLIGHT_DENIED_EXIT_CODE);
+                }
+            }
+        }
     }
 
     let my_pid = std::process::id();
@@ -172,8 +227,6 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
     } else {
         Some(StateHeartbeat::start_lock(storage.clone(), my_pid))
     };
-
-    let theme = ColorTheme::new();
 
     // Set process priority class (Idle by default)
     if let Err(e) = apply_process_priority(args.priority) {

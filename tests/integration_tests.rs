@@ -600,3 +600,163 @@ fn test_clean_reports_reaped_records() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("1 waiter(s)"), "got: {stdout}");
 }
+
+// ---------------------------------------------------------------------------
+// Host resource probing & preflight resource guard
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_probe_human_and_json_output() {
+    let harness = Harness::new("probe_out");
+
+    let human = harness.cmd().arg("probe").output().expect("run bque probe");
+    assert!(
+        human.status.success(),
+        "bque probe failed: {}",
+        String::from_utf8_lossy(&human.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.contains("Host Resource Profile"), "got: {stdout}");
+    assert!(stdout.contains("Tier:"), "got: {stdout}");
+    assert!(stdout.contains("Logical Cores:"), "got: {stdout}");
+    assert!(stdout.contains("Recommended Jobs:"), "got: {stdout}");
+
+    let json_out = harness
+        .cmd()
+        .args(["probe", "--json", "--path"])
+        .arg(&harness.dir)
+        .output()
+        .expect("run bque probe --json --path");
+    assert!(
+        json_out.status.success(),
+        "bque probe --json failed: {}",
+        String::from_utf8_lossy(&json_out.stderr)
+    );
+    let val: serde_json::Value =
+        serde_json::from_slice(&json_out.stdout).expect("parse probe json");
+    assert!(val["os"].as_str().is_some_and(|s| !s.is_empty()));
+    assert!(val["arch"].as_str().is_some_and(|s| !s.is_empty()));
+    assert!(val["logical_cores"].as_u64().unwrap_or(0) >= 1);
+    assert!(val["total_ram_mb"].as_u64().unwrap_or(0) > 0);
+    assert!(val.get("available_ram_mb").is_some());
+    assert!(val.get("swap_total_mb").is_some());
+    assert!(val.get("swap_available_mb").is_some());
+    assert!(val["disk_path"].as_str().is_some_and(|s| !s.is_empty()));
+    assert!(val["disk_free_gb"].as_f64().is_some());
+    let tier = val["tier"].as_str().unwrap_or("");
+    assert!(
+        matches!(tier, "light" | "standard" | "heavy"),
+        "unexpected tier: {tier}"
+    );
+    assert!(val["recommended_build_jobs"].as_u64().unwrap_or(0) >= 1);
+}
+
+#[test]
+fn test_probe_nonexistent_path_fails() {
+    let harness = Harness::new("probe_missing_path");
+    let missing = harness.state_path("does_not_exist_dir");
+    let output = harness
+        .cmd()
+        .args(["probe", "--path"])
+        .arg(&missing)
+        .output()
+        .expect("run bque probe --path missing");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Probe path does not exist"),
+        "got: {stderr}"
+    );
+}
+
+#[test]
+fn test_run_preflight_warn_continues() {
+    let harness = Harness::new("preflight_warn");
+    let sh = shell_args("echo PREFLIGHT_WARN_RAN");
+    let output = harness
+        .cmd()
+        .args([
+            "run",
+            "--min-cores",
+            "999999",
+            "--on-low-resource",
+            "warn",
+            "--",
+        ])
+        .args(sh)
+        .output()
+        .expect("run bque with preflight warn");
+
+    assert!(output.status.success(), "warn policy must allow execution");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("PREFLIGHT_WARN_RAN"), "got: {stdout}");
+    assert!(
+        stderr.contains("Preflight resource check warning"),
+        "got: {stderr}"
+    );
+    assert!(stderr.contains("Host Resource Profile"), "got: {stderr}");
+}
+
+#[test]
+fn test_run_preflight_deny_aborts_before_execution() {
+    let harness = Harness::new("preflight_deny");
+    let sh = shell_args("echo SHOULD_NOT_RUN");
+    let output = harness
+        .cmd()
+        .args([
+            "run",
+            "--min-cores",
+            "999999",
+            "--min-ram-mb",
+            "999999999",
+            "--on-low-resource",
+            "deny",
+            "--",
+        ])
+        .args(sh)
+        .output()
+        .expect("run bque with preflight deny");
+
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stdout.contains("SHOULD_NOT_RUN"), "got: {stdout}");
+    assert!(
+        stderr.contains("Preflight resource check failed"),
+        "got: {stderr}"
+    );
+    assert!(stderr.contains("logical cores"), "got: {stderr}");
+    assert!(stderr.contains("total RAM"), "got: {stderr}");
+    assert!(stderr.contains("Host Resource Profile"), "got: {stderr}");
+}
+
+#[test]
+fn test_run_preflight_passes_when_thresholds_met() {
+    let harness = Harness::new("preflight_pass");
+    let sh = shell_args("echo PREFLIGHT_PASS_OK");
+    let output = harness
+        .cmd()
+        .args([
+            "run",
+            "--min-cores",
+            "1",
+            "--min-ram-mb",
+            "1",
+            "--on-low-resource",
+            "deny",
+            "--",
+        ])
+        .args(sh)
+        .output()
+        .expect("run bque with satisfied preflight");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("PREFLIGHT_PASS_OK"), "got: {stdout}");
+    assert!(
+        !stderr.contains("Preflight resource check"),
+        "got: {stderr}"
+    );
+}
