@@ -40,7 +40,7 @@ git config --get core.hooksPath   # expected: .githooks
 If it is empty or points elsewhere, run:
 
 ```bash
-just doctor --fix        # or: sh .pengj-templates/scripts/doctor.sh --fix
+just doctor --fix        # or: pengj-templates-cli doctor --fix
 ```
 
 The doctor checks the toolchain and activates the hooks without installing anything. If `core.hooksPath` belongs to another tool, it reports the conflict and leaves it alone.

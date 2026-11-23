@@ -1,8 +1,8 @@
 # Custom environment checks
 
-`.pengj-templates/scripts/doctor.sh` (Unix) and `.pengj-templates/scripts/doctor.ps1` (Windows) first check the
-tools the selected template layers use, then run every script in this
-directory in sorted order.
+`pengj-templates-cli doctor` (also invoked via `just doctor`) first checks the
+tools and capabilities the selected template layers use, then runs every script
+in this directory in sorted order.
 
 ## Contract
 
@@ -10,7 +10,7 @@ directory in sorted order.
 - Windows: `*.ps1`, executed with `pwsh -NoProfile -File`.
 - Working directory: the project root.
 - `DOCTOR_ROOT`: the project root.
-- `DOCTOR_FIX=1`: set when the doctor runs with `--fix` / `-Fix`. A custom
+- `DOCTOR_FIX=1`: set when `doctor` runs with `--fix`. A custom
   check may repair its own tool in that case.
 - Exit `0` means pass; any non-zero exit is reported as a failure and makes
   the doctor exit non-zero.

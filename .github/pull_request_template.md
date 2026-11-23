@@ -9,4 +9,4 @@
 - [ ] The `gate` check is green.
 
 
-> The check runs on the server, so it needs nothing from your machine. To catch the same problems before pushing, enable the local gate once: `sh .githooks/install.sh`.
+> The check runs on the server, so it needs nothing from your machine. To catch the same problems before pushing, enable the local gate once: `just doctor --fix` (or `pengj-templates-cli gate hooks install`).

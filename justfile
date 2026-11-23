@@ -21,13 +21,8 @@ default:
     @just --list
 
 # Environment check: toolchain + commit hooks + agent workspace links (extend with .pengj-templates/scripts/doctor.d/)
-[unix]
 doctor *ARGS:
-    @sh .pengj-templates/scripts/doctor.sh {{ARGS}}
-# Environment check: toolchain + commit hooks + agent workspace links (extend with .pengj-templates/scripts/doctor.d/)
-[windows]
-doctor *ARGS:
-    @pwsh -NoProfile -File .pengj-templates/scripts/doctor.ps1 {{ARGS}}
+    @pengj-templates-cli doctor --dir . {{ARGS}}
 # PENGJ_TEMPLATE_END
 
 # ---------------------------------------------------------------------------
