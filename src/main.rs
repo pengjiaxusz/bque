@@ -4,6 +4,7 @@ mod commands;
 mod governor;
 mod job;
 mod lock;
+mod probe;
 mod runner;
 mod state;
 pub mod ui;
@@ -24,6 +25,10 @@ fn main() -> anyhow::Result<()> {
         Commands::Bench(args) => bench::run_benchmark(args)?,
         Commands::Status(args) => {
             commands::handle_status(args)?;
+            0
+        }
+        Commands::Probe(args) => {
+            commands::handle_probe(args)?;
             0
         }
         Commands::Pause(args) => {

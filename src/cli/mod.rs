@@ -24,6 +24,9 @@ pub enum Commands {
     /// Show current lock holder, queue waiters, observers, and system budget status
     Status(StatusArgs),
 
+    /// Probe host CPU, memory, swap, disk capacity, and recommended build concurrency
+    Probe(ProbeArgs),
+
     /// Manually pause all background builds (e.g. for gaming or interactive profiling)
     Pause(PauseArgs),
 
@@ -35,6 +38,23 @@ pub enum Commands {
 
     /// Check for updates or upgrade bque to the latest version
     Update(UpdateArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ProbeArgs {
+    /// Output host resource profile as machine-readable JSON
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+
+    /// Directory path used to measure free disk space (defaults to current working directory)
+    #[arg(long)]
+    pub path: Option<PathBuf>,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LowResourcePolicy {
+    Warn,
+    Deny,
 }
 
 #[derive(Args, Debug)]
@@ -78,6 +98,18 @@ pub struct RunArgs {
     /// Working directory for command execution (defaults to current working directory)
     #[arg(long)]
     pub cwd: Option<PathBuf>,
+
+    /// Minimum required logical CPU cores before starting the command
+    #[arg(long)]
+    pub min_cores: Option<usize>,
+
+    /// Minimum required total RAM in MB before starting the command
+    #[arg(long)]
+    pub min_ram_mb: Option<u64>,
+
+    /// Policy when host resources are below --min-cores or --min-ram-mb
+    #[arg(long, value_enum, default_value = "warn")]
+    pub on_low_resource: LowResourcePolicy,
 }
 
 #[derive(Args, Debug)]
