@@ -161,7 +161,7 @@ Inspect the CLI execution report:
 
 <!-- PENGJ_TEMPLATE_END -->
 
-<!-- 以下为项目专属区域：模板更新只替换上方托管块，本区域归项目所有、完整保留。 -->
-## 项目专属同步配置与快捷方式
+<!-- Project-specific section below: template updates only replace the managed block above; this section belongs to the project and is preserved in full. -->
+## Project-Specific Sync Configuration & Shortcuts
 
-> 可在此登记本项目常用的上游模板地址、默认层组合、前后置同步脚本等信息。
+> Register this project's upstream template URL, default layer set, and pre/post-sync scripts here.

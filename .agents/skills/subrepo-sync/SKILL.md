@@ -120,27 +120,27 @@ disappear. Before investigating, confirm the test executables were built *after*
 
 <!-- PENGJ_TEMPLATE_END -->
 
-<!-- 以下为项目专属区域：模板更新只替换上方托管块，本区域归项目所有、完整保留。 -->
-## 项目专属子仓库配置与门禁契约
+<!-- Project-specific section below: template updates only replace the managed block above; this section belongs to the project and is preserved in full. -->
+## Project-Specific Subrepo Configuration & Gate Contracts
 
-> 在此处声明本项目的子仓库路径、领域专属聚类关键词、宿主验证门禁与架构红线。
+> Declare this project's subrepo paths, domain clustering keywords, host verification gates, and architectural boundaries here.
 
-### 1. 托管子仓库登记
-| 子仓库名称 | 相对路径 | 依赖模式 (Submodule / FetchContent / 本地) | 上游跟踪分支 |
+### 1. Managed Subrepo Registry
+| Subrepo Name | Relative Path | Dependency Mode (Submodule / FetchContent / Local) | Upstream Tracking Branch |
 | :--- | :--- | :--- | :--- |
 | `example-subrepo` | `submodules/example-subrepo` | Git Submodule | `origin/main` |
 
-### 2. 宿主架构红线
-- **单真相源驱动**：严禁在依赖缓存目录中直接修改或分叉；所有通用组件与契约必须源自 upstream。
-- **组件自举律**：上游一旦推出规范控件，必须及时重构并移除宿主自研的重复手写实现。
+### 2. Host Architectural Boundaries
+- **Single source of truth**: Never modify or fork inside dependency cache directories; all shared components and contracts must come from upstream.
+- **Component self-bootstrapping**: Once upstream ships a canonical component, refactor and remove any duplicate host-side hand-written implementation.
 
-### 3. 项目专属验证门禁
+### 3. Project-Specific Verification Gates
 ```powershell
-# 静态与编译检查
+# Static and build checks
 # cargo check --workspace
 # pnpm build
 
-# 自动化测试与卫生门禁
+# Automated tests and hygiene gates
 # cargo test --workspace
 # pwsh tools/hygiene.ps1
 ```
