@@ -4,6 +4,10 @@
 
 set -eu
 
+PENGJ_TMP="${XDG_CACHE_HOME:-$HOME/.cache}/pengj-templates/tmp"
+mkdir -p "$PENGJ_TMP"
+export TMPDIR="$PENGJ_TMP"
+
 PENGJ_BIN="${XDG_DATA_HOME:-$HOME/.local/share}/pengj-templates/bin"
 case ":$PATH:" in
   *":$PENGJ_BIN:"*) ;;
