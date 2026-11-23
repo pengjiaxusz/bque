@@ -3,8 +3,19 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: &docs_only
+      - '*.md'
+      - 'docs/**'
+      - '.agents/**'
+      - '.github/pull_request_template.md'
+      - 'LICENSE*'
   pull_request:
     branches: [main]
+    paths-ignore: *docs_only
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check-and-test:

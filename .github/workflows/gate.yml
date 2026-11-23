@@ -24,13 +24,52 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      # Pin latest major Action versions (Node 24 runtime, no Node 20 deprecation warnings); when adding project CI workflows, prefer `actions/checkout@v7`, `actions/cache@v6`, `Swatinem/rust-cache@v2` and `taiki-e/install-action@v2` with `concurrency` enabled.
+      - uses: actions/checkout@v7
         with:
           # The full history is needed to walk the commit range, and the head ref keeps GitHub's auto-generated merge commit out of the range.
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           # Checkout leaves submodules empty, so a project whose path dependencies live in a submodule cannot even load its workspace — and the failure surfaces as a missing dependency rather than a missing submodule. Harmless for projects without submodules.
           submodules: true
+
+      # Keep `gate` running on every push/PR so the required status check never stalls, but skip Rust/code checks when the diff only touches docs.
+      - name: Detect code changes
+        id: changes
+        env:
+          GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          base="${GATE_BASE:-}"
+          if printf '%s' "$base" | grep -qE '^0+$' || [ -z "$base" ] || ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1; then
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$base"..HEAD 2>/dev/null || true)
+          if [ -z "$changed" ]; then
+            echo "code_changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          code_changed=false
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            case "$file" in
+              docs/*|.agents/*|.github/pull_request_template.md|LICENSE*)
+                ;;
+              */*)
+                code_changed=true
+                break
+                ;;
+              *.md)
+                ;;
+              *)
+                code_changed=true
+                break
+                ;;
+            esac
+          done <<EOF
+          $changed
+          EOF
+          echo "code_changed=$code_changed" >> "$GITHUB_OUTPUT"
 
       - name: Install pengj-templates-cli
         run: |
@@ -70,6 +109,7 @@ jobs:
           exit "$status"
 
       - name: Run the code language guard
+        if: steps.changes.outputs.code_changed == 'true'
         run: |
           set +e
           output=$(pengj-templates-cli gate check 2>&1)
@@ -109,4 +149,5 @@ jobs:
 
       # The local pre-commit hook formats the staged Rust files; without the CLI that never happens, so the server checks it.
       - name: Check the formatting
+        if: steps.changes.outputs.code_changed == 'true'
         run: cargo fmt --check

@@ -3,10 +3,10 @@
 #
 # Why this stage exists at all: `git am`, `git cherry-pick` and `git rebase` never run `pre-commit` — only `git commit` does. A patch series therefore lands with no formatting or language check, and the problem surfaces in CI instead. `pre-push` is the one hook every history-building command has to pass through.
 #
-# Three checks run before a push leaves the machine:
+# By default `pre-push` stays second-level fast (heavy workspace checks such as clippy or full test suites belong in CI):
 #   1. `cargo fmt --check`, the same command CI runs;
 #   2. the code language guard over the whole working tree;
-#   3. every command listed in `prepush.commands` (`.pengj-templates/gate.toml`), in order — that is where a project puts clippy and friends.
+#   3. optional commands listed in `prepush.commands` (`.pengj-templates/gate.toml`), empty by default; set `PENGJ_GATE_SKIP_PREPUSH_COMMANDS=1` in constrained environments to skip custom commands while keeping built-in checks active.
 #
 # git passes the refs being pushed on stdin and this hook must forward them untouched, which is why the CLI is `exec`ed rather than captured.
 #
