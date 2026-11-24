@@ -43,7 +43,7 @@ to a recipe of its own.
 
 - Variadic recipes: `build *ARGS:` then forward with `{{ARGS}}`. In a template file, wrap that variable in a minijinja raw block so it survives rendering.
 - Prefix the command with `@` to suppress just's command echo when the recipe itself prints useful output.
-- When a layer uses worktrees, inject the shared target dir through `pengj-templates-cli worktree target-dir` — see `templates/rust/.pengj-templates/just/rust.just` for the `shared_win()` / `shared_sh()` macro pattern. Do not hardcode `CARGO_TARGET_DIR`.
+- When a layer uses worktrees, inject the shared target dir through `pengj-templates-cli worktree target-dir` — see `templates/rust/.pengj-templates/just/rust.just` for the `shared_win()` / `shared_sh()` macro pattern. Do not hardcode `CARGO_TARGET_DIR`, and never write a bare top-level backtick like ``export CARGO_TARGET_DIR := `pengj-templates-cli worktree target-dir --dir .` `` (top-level backticks do not inherit `export PATH` and fail with exit 127 when the CLI is missing or PATH has not been refreshed; prepend the default install dir and fall back to `${CARGO_TARGET_DIR:-target}`).
 - Multi-line recipes: just runs each line in its own shell by default. Use `#!/usr/bin/env bash` shebang recipes or explicit line continuation when state must be shared.
 
 ## 4. Managed-block discipline

@@ -2,10 +2,13 @@
 # The framework area below is a managed block: template updates replace it in place; everything outside the block belongs to the project.
 # Heavy commands call `bque run -- <cmd>`; benchmarks call `bque bench -- <cmd>` (the bque layer ships no wrapper).
 # PENGJ_TEMPLATE_START
+set minimum-version := "1.56.0"
 [unix]
 set shell := ["sh", "-uc"]
 [windows]
 set shell := ["pwsh", "-NoProfile", "-Command"]
+[unix]
+export PATH := env('XDG_DATA_HOME', env('HOME', '') + '/.local/share') + '/pengj-templates/bin:' + env('HOME', '') + '/.local/bin:' + env('PATH', '')
 # Let the project area override a framework recipe with the same name (e.g. a `test` that pre-builds an artifact), instead of editing the managed imports.
 set allow-duplicate-recipes := true
 

@@ -6,9 +6,14 @@
 set -eu
 
 PENGJ_BIN="${XDG_DATA_HOME:-$HOME/.local/share}/pengj-templates/bin"
+LOCAL_BIN="$HOME/.local/bin"
+case ":$PATH:" in
+  *":$LOCAL_BIN:"*) ;;
+  *) PATH="$LOCAL_BIN:$PATH"; export PATH ;;
+esac
 case ":$PATH:" in
   *":$PENGJ_BIN:"*) ;;
-  *) PATH="$PATH:$PENGJ_BIN"; export PATH ;;
+  *) PATH="$PENGJ_BIN:$PATH"; export PATH ;;
 esac
 
 if command -v just >/dev/null 2>&1 \
@@ -30,9 +35,10 @@ echo "      curl -fsSL https://github.com/pengjiaxusz/pengj-templates/releases/l
 
 if ! command -v just >/dev/null 2>&1; then
   echo "" >&2
-  echo "  - just (~3-5 MB, optional if calling the CLI directly)" >&2
-  echo "    Typical install path: ~/.local/bin, ~/.cargo/bin, or package manager bin" >&2
-  echo "    Install: brew install just / cargo install just / https://github.com/casey/just#installation" >&2
+  echo "  - just (>= 1.56.0, ~3-5 MB, optional if calling the CLI directly)" >&2
+  echo "    Typical install path: ~/.local/bin or ~/.cargo/bin (avoid outdated apt packages)" >&2
+  echo "    Install: curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | sh -s -- --to ~/.local/bin" >&2
+  echo "    Or: brew install just / cargo install just / https://github.com/casey/just#installation" >&2
 fi
 
 echo "" >&2
