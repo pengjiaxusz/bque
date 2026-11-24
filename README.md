@@ -115,8 +115,17 @@ bque run --desc "Compile Web App" -- cmake --build build
 # Enforce a 50% CPU soft-cap
 bque run --cpu-rate 50 -- cargo test
 
-# Observer mode (monitored in status without blocking the build queue)
-bque run --observer --desc "Linter" -- cargo clippy
+# Lightweight task (claims 25/100 budget, runs concurrently with other light tasks)
+bque run --weight light --desc "Linter" -- cargo clippy
+
+# Mutual-exclusion scope (never overlaps even when Yielding)
+bque run --scope web-build -- cmake --build build
+
+# Yielding & opt-in watchdogs (exit 124 on stall or max duration)
+bque run --yield-after 10 --stall-timeout 300 --max-duration 1800 -- cargo test
+
+# Observer mode (monitored in status without consuming queue budget)
+bque run --observer --desc "Dev server" -- cargo run -q -p xtask -- dev
 ```
 
 ### 2. Clean-Room Benchmark Protection (`bque bench`)
@@ -173,6 +182,8 @@ Temporarily pause all background builds (e.g. before launching an intensive appl
 
 ```powershell
 bque pause --reason "Gaming session"
+# Keep observer dev servers running while freezing active builds:
+bque pause --keep-observers --reason "Interactive profiling"
 # Later:
 bque resume
 ```

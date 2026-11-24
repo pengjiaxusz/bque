@@ -760,3 +760,224 @@ fn test_run_preflight_passes_when_thresholds_met() {
         "got: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Budget-based scheduling, yielding, scopes, and execution watchdogs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_status_json_includes_budget_and_active_tasks() {
+    let harness = Harness::new("budget_json");
+    let val = harness.status_json();
+    assert_eq!(val["budget_total"], 100);
+    assert_eq!(val["budget_used"], 0);
+    assert_eq!(val["oversubscribed"], false);
+    assert!(val["active_tasks"].as_array().unwrap().is_empty());
+}
+
+#[test]
+#[cfg(unix)]
+fn test_light_weight_tasks_run_concurrently() {
+    let harness = Harness::new("light_concurrent");
+    let started = std::time::Instant::now();
+
+    let mut first = harness
+        .cmd()
+        .args([
+            "run",
+            "--weight",
+            "light",
+            "--no-governor",
+            "--",
+            "sh",
+            "-c",
+            "sleep 0.6",
+        ])
+        .spawn()
+        .expect("spawn first light task");
+    let mut second = harness
+        .cmd()
+        .args([
+            "run",
+            "--weight",
+            "light",
+            "--no-governor",
+            "--",
+            "sh",
+            "-c",
+            "sleep 0.6",
+        ])
+        .spawn()
+        .expect("spawn second light task");
+
+    assert!(first.wait().expect("wait first").success());
+    assert!(second.wait().expect("wait second").success());
+    // Two 0.6s light tasks running concurrently should finish well under 1.1s.
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(1150),
+        "expected concurrent light tasks, took {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_yielding_admits_queued_heavy_waiter() {
+    let harness = Harness::new("yielding_admit");
+    let log_path = harness.state_path("yield.log");
+    let script1 = format!(
+        "echo first_start >> '{0}'; sleep 5; echo first_end >> '{0}'",
+        log_path.display()
+    );
+    let script2 = format!("echo second_done >> '{}'", log_path.display());
+
+    let mut first = harness
+        .cmd()
+        .args([
+            "run",
+            "--no-governor",
+            "--yield-after",
+            "2",
+            "--",
+            "sh",
+            "-c",
+            &script1,
+        ])
+        .spawn()
+        .expect("spawn sleeping heavy task");
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let second = harness
+        .cmd()
+        .args([
+            "run",
+            "--no-governor",
+            "--timeout",
+            "10",
+            "--",
+            "sh",
+            "-c",
+            &script2,
+        ])
+        .output()
+        .expect("run second heavy task");
+
+    assert!(second.status.success(), "second task failed");
+    assert!(first.wait().expect("wait first").success());
+
+    let log = std::fs::read_to_string(&log_path).expect("read yield log");
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["first_start", "second_done", "first_end"],
+        "second heavy task must run once first heavy task yields; got: {lines:?}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_scope_prevents_overlap_even_when_yielding() {
+    let harness = Harness::new("scope_mutex");
+    let log_path = harness.state_path("scope.log");
+    let script1 = format!(
+        "echo first_start >> '{0}'; sleep 3; echo first_end >> '{0}'",
+        log_path.display()
+    );
+    let script2 = format!("echo second_start >> '{}'", log_path.display());
+
+    let mut first = harness
+        .cmd()
+        .args([
+            "run",
+            "--no-governor",
+            "--scope",
+            "repo-build",
+            "--yield-after",
+            "1",
+            "--",
+            "sh",
+            "-c",
+            &script1,
+        ])
+        .spawn()
+        .expect("spawn scoped task 1");
+
+    std::thread::sleep(std::time::Duration::from_millis(250));
+
+    let second = harness
+        .cmd()
+        .args([
+            "run",
+            "--no-governor",
+            "--scope",
+            "repo-build",
+            "--weight",
+            "light",
+            "--timeout",
+            "10",
+            "--",
+            "sh",
+            "-c",
+            &script2,
+        ])
+        .output()
+        .expect("run scoped task 2");
+
+    assert!(first.wait().expect("wait first").success());
+    assert!(second.status.success());
+
+    let log = std::fs::read_to_string(&log_path).expect("read scope log");
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["first_start", "first_end", "second_start"],
+        "same-scope tasks must never overlap even when yielding; got: {lines:?}"
+    );
+}
+
+#[test]
+fn test_stall_timeout_terminates_hung_task_with_124() {
+    let harness = Harness::new("stall_watchdog");
+    let sh = if cfg!(windows) {
+        shell_args("ping -n 20 127.0.0.1 > nul")
+    } else {
+        shell_args("sleep 20")
+    };
+    let output = harness
+        .cmd()
+        .args(["run", "--no-governor", "--stall-timeout", "2", "--"])
+        .args(sh)
+        .output()
+        .expect("run stalled task");
+
+    assert_eq!(
+        output.status.code(),
+        Some(124),
+        "stall watchdog must exit 124; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_max_duration_terminates_long_task_with_124() {
+    let harness = Harness::new("max_duration");
+    let sh = if cfg!(windows) {
+        shell_args("ping -n 20 127.0.0.1 > nul")
+    } else {
+        shell_args("sleep 20")
+    };
+    let output = harness
+        .cmd()
+        .args(["run", "--no-governor", "--max-duration", "1", "--"])
+        .args(sh)
+        .output()
+        .expect("run max-duration task");
+
+    assert_eq!(
+        output.status.code(),
+        Some(124),
+        "max-duration watchdog must exit 124; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
