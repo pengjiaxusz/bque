@@ -36,7 +36,7 @@ to a recipe of its own.
 
 - `[windows]` / `[unix]` must appear together for any recipe whose body differs. A lone `[windows]` recipe makes `just` on Linux/macOS report "no recipe found".
 - `[unix]` is a real attribute in just (covers Linux and macOS). Do not use `[linux]` and assume macOS is included.
-- bque is a Windows-only global kernel lock. The `[unix]` branch running the raw command is the intended behavior — never call `bque` there.
+- bque supports both Windows and Linux/WSL2, while `[unix]` recipes intentionally run the raw command so CI runners need no `bque` binary — never force `bque` into `[unix]` template recipes.
 - If a recipe is identical on all platforms (e.g. `fmt`), write it once with no attribute.
 
 ## 3. Arguments and shell details

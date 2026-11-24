@@ -3,53 +3,43 @@
 
 ## 1. Command Mapping Matrix
 
-| Original Native Command | Recommended Execution (with bque) | Underlying bque Mode | Priority Class |
+| Original Native Command | Recommended Execution (with bque) | Weight / Mode | Priority Class |
 | :--- | :--- | :--- | :--- |
-| `cargo build` | `just build` | `bque run` | `Idle` (Inherited by compiler tree) |
-| `cargo check --workspace` | `just check` | `bque run` | `Idle` |
-| `cargo clippy -- -D warnings` | `just clippy` (or `bque run -- cargo clippy ...`) | `bque run` | `Idle` |
-| `cargo test --workspace` | `just test` | `bque run` | `Idle` |
-| `pnpm build` | `just build` (or `bque run -- pnpm build`) | `bque run` | `Idle` |
-| `cmake --build target/debug` | `just build` | `bque run` | `Idle` |
-| `ninja -C target/debug <target>` | `just test-build <target>` (or `bque run -- ninja ...`) | `bque run` | `Idle` |
-| `ctest --output-on-failure` | `just test` (or `bque run -- ctest ...`) | `bque run` | `Idle` |
-| `cargo bench` | `just bench` | `bque bench` | `High` (Freezes background builds) |
-| `pnpm bench` | `just bench` | `bque bench` | `High` (Freezes background builds) |
-| `cargo fmt` | `cargo fmt` (Direct) | **Bypass** | Foreground |
-| `git status` / `git commit` | Direct commands | **Bypass** | Foreground |
-| Any ad-hoc heavy command | `bque run -- <cmd>` | `bque run` | `Idle` |
-| Any ad-hoc benchmark | `bque bench -- <cmd>` | `bque bench` | `High` (Freezes background builds) |
-| Long-running service: dev server, watch loop, `xtask dev`, `pnpm dev`, `cargo watch` | `bque run --observer -- <cmd>` (**never** plain `bque run`) | `bque run --observer` | `Idle` |
+| `cargo build` | `just build` | `heavy` (`100`, auto-yielding) | `Idle` (inherited by tree) |
+| `cargo check --workspace` | `just check` | `heavy` (`100`) or `--weight medium` (`50`) | `Idle` |
+| `cargo clippy -p <crate>` | `bque run --weight light -- cargo clippy -p <crate>` | `light` (`25`, concurrent) | `Idle` |
+| `cargo test --workspace` | `just test` | `heavy` (`100`, auto-yielding) | `Idle` |
+| `cargo test -p <crate> --lib` | `bque run --weight light -- cargo test -p <crate> --lib` | `light` (`25`, concurrent) | `Idle` |
+| `pnpm build` / `tsc` | `just build` or `bque run -- pnpm build` | `heavy` (`100`) | `Idle` |
+| `cmake --build target/debug` | `just build` or `bque run --scope cmake-debug -- cmake --build target/debug` | `heavy` + `--scope` | `Idle` |
+| `ninja -C target/debug <target>` | `just test-build <target>` or `bque run --scope cmake-debug -- ninja ...` | `heavy` + `--scope` | `Idle` |
+| `ctest --output-on-failure` | `just test` or `bque run -- ctest ...` | `heavy` (`100`) | `Idle` |
+| `cargo bench` / `pnpm bench` | `just bench` or `bque bench -- <cmd>` | `bque bench` | `High` (freezes all active tasks & observers) |
+| `cargo fmt` / `git ...` | Direct command | **Bypass** | Foreground |
+| Automated / Agent build or test | `bque run --stall-timeout 300 --max-duration 1800 -- <cmd>` | Watchdog (`exit 124`) | `Idle` |
+| Long-running service (`xtask dev`, `pnpm dev`, `cargo watch`) | `bque run --observer -- <cmd>` (**never** plain `bque run`) | `--observer` (`0` Budget) | `Idle` |
 
-`bque run --observer` applies the same priority / CPU budget but does **not** take the global
-build lock. A server that holds the lock blocks every other build for as long as it runs — the
-classic "my build hangs for hours" symptom. `bque status` flags a holder older than 30 minutes
-for exactly this reason.
+### Key Scheduling Mechanics (v0.3.0+)
 
-Ad-hoc commands go straight to the native CLI. The layer used to ship a `just q-run` / `just q-bench`
-wrapper and it was removed on purpose: a wrapper can only forward the command itself, never bque's own
-flags (`--cwd`, `--observer`, `--priority`), so it cannot express what an ad-hoc call usually needs.
-Promote a command to a project recipe (`bque run -- <cmd>` inside the recipe) when it earns keeping.
-On Unix / CI there is nothing to wrap — bque is a Windows-only global lock.
+- **100-unit Budget & Backfill**: Total host budget is `100`. Multiple `light` (`25`) or `medium` (`50`) tasks run concurrently. Smaller waiters may backfill spare capacity ahead of a blocked heavy waiter until the head waiter has waited `60s` (starvation cap).
+- **Automatic Yielding & Soft Oversubscription**: Any running task staying below `5%` host CPU for `--yield-after` seconds (default `10s`) enters `Yielding` and temporarily lends its budget to waiters without being killed (disable with `--no-yield`). If a yielding task later resumes heavy CPU work while a borrower is still running, both stay `Active` under soft oversubscription (`OVERSUBSCRIBED`), splitting the CPU soft-cap proportionally while blocking further admissions.
+- **Scope Exclusion (`--scope <key>`)**: Tasks sharing a `--scope` key never overlap — even if the holder enters `Yielding` — protecting shared build directories from corruption.
+- **Opt-in Watchdogs (Exit `124`)**: `--stall-timeout <secs>` terminates the child tree if process-tree CPU stays `<0.5%` continuously; `--max-duration <secs>` enforces a hard wall-clock ceiling. Both preserve `Stdio::inherit()` native TTY output and return exit code `124`.
+- **Cross-Platform Boundary**: `bque` runs natively on both Windows and Linux/WSL2. Generated `justfile` `[unix]` recipes pass through without `bque` so CI runners stay zero-dependency; invoke `bque` directly on Linux/WSL2 dev hosts when cross-repo queuing is desired.
 
 ---
 
 ## 2. Windows 4KB Anonymous Pipe Deadlock & Safe Handling
 
 ### The Problem
-When running native console processes (e.g. `cmake`, `cargo`, `ninja`, `ctest`) in PowerShell:
 ```powershell
 # DANGEROUS ANTI-PATTERN: DO NOT RUN THIS!
 cargo test 2>&1 | Select-Object -First 100  # pipeline-hygiene: ok anti-pattern doc
 ```
-- PowerShell creates an anonymous pipe with a fixed 4KB buffer.
-- `Select-Object -First 100` stops reading once it has collected 100 objects and closes its end of the pipeline.
-- The upstream native process (`cargo.exe` or `cl.exe`) continues trying to output logs. As soon as the 4KB buffer is filled, the Win32 `WriteFile` system call blocks indefinitely.
-- The pipeline freezes for 120 seconds until a timeout kills it.
+PowerShell creates a 4KB anonymous pipe. Once `Select-Object -First 100` closes its read end, the upstream native compiler blocks indefinitely on Win32 `WriteFile`.
 
 ### The Safe Pattern (Redirect to disk first)
 ```powershell
-# Safe: redirect all streams (*>) to a temporary log file, then read
 cargo test *> test_out.log
 Get-Content test_out.log -TotalCount 100
 Remove-Item test_out.log -ErrorAction SilentlyContinue
@@ -57,35 +47,28 @@ Remove-Item test_out.log -ErrorAction SilentlyContinue
 
 ---
 
-## 3. Abnormal State Recovery & Deadlock Clearance
+## 3. Abnormal State Recovery & Orphan Freeze Healing
 
-Every queue record is bound to the process instance that wrote it (PID **plus** process creation
-time, so a recycled PID is not mistaken for a live owner) and refreshed by a heartbeat. Dead and
-phantom records are dropped automatically the next time any `status`, `run` or `bench` consults
-the queue — a stuck entry normally disappears on its own.
+Every queue record (`tasks/task_<pid>.json`, `waiters/`, `observers/`, `bench_state.json`, `pause_state.json`) is pinned to `(pid, created_at_ms)` and refreshed by a heartbeat. Coordination uses a short-lived `Bque_Coord_Lock` rather than a long-held global mutex:
 
-If a process crashed abruptly, or the queue is held by a record you want gone right now:
+- Dead or recycled-PID records are reaped automatically on any `status`, `run`, or `bench` call.
+- If a `bque bench` process crashes while background builds were suspended, the next `reap()` / `bque status` / `bque clean` verifies recorded process identities and **automatically unfreezes** the orphaned build trees.
 
 ```powershell
-# 0. Verify the installation and PATH fallback
+# 0. Verify installation and host tier (`bque probe --json`)
 just doctor
 
-# 1. Inspect lock status (this also performs the healing pass)
+# 1. Inspect active tasks, Budget (used/100), live CPU%, Yielding state, and waiters
 bque status
 
-# 2. Clean orphaned state files, and report exactly what was removed
+# 2. Clean dead records and auto-unfreeze any orphaned frozen processes
 bque clean
 
-# 3. Emergency unblock: also drop records whose owner still looks alive
+# 3. Emergency unblock: drop all state records and resume any frozen processes
 bque clean --force
-# The kernel mutex stays authoritative, so a genuinely running build keeps running
 
-# 4. Manually pause/resume builds when gaming or running profiling
-bque pause
+# 4. Manually freeze/resume active builds (optionally keep dev-server observers alive)
+bque pause --keep-observers --reason "Gaming or profiling"
 bque resume
 ```
-
-`bque clean --force` clears state records, not processes: a long-running dev server that still
-holds the kernel mutex keeps the queue busy. Stop that process (or restart it with
-`bque run --observer`) to actually release the lock.
 

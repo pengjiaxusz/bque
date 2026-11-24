@@ -1,6 +1,6 @@
 {
   "tool": "pengj-templates",
-  "version": "0.88.1",
+  "version": "0.88.2",
   "project_name": "bque",
   "layers": [
     "common",
@@ -38,9 +38,9 @@
   "generated_at": "2026-10-29T19:42:36Z",
   "files": {
     ".agents/.gitignore": "29d451b4e437578299b6b2ede3bc85052a83c0bf9af3e50a6bb1f3600f2cf832",
-    ".agents/skills/bque/SKILL.md": "e58bd25712d84dbc9c994eece42311b0d34344c579245f315c8c49bd60543be1",
+    ".agents/skills/bque/SKILL.md": "c627b2c76df2f751fe1c87415578101b353534b28456cd56009fe253a3d775cd",
     ".agents/skills/bque/references/install.md": "2a7a6d96ae0e2d79bdf9af952f507b888b545343cdb4ba13c91f115729269b88",
-    ".agents/skills/bque/references/usage-matrix.md": "bfe3f699877a678f1c27297354f09bf4e914006fb5dbef32aaa3f2576d0d1b32",
+    ".agents/skills/bque/references/usage-matrix.md": "98bdae42c03cd01d3654718d3cf3dffba32da26a56e7039d8374359df9a8d3bf",
     ".agents/skills/caveman/SKILL.md": "ad046cafde3ee094136ce091b7dfde5c09bcf25914734c249f9c54e17b4bdf4b",
     ".agents/skills/git-workflow/SKILL.md": "6ea3787ffcc7d4e67fb161f68d38d79a4552c2dbb583e6996349c297a69aed1a",
     ".agents/skills/git-workflow/references/branch-sync.md": "5c5b862bc8315e541e0d00a20a6df03395985374387311cfe35eed888a9d3fbc",
@@ -81,8 +81,8 @@
     ".agents/skills/template-sync/scripts/sync-template.ps1": "45b58555f29413f03337fc37ec321ee96c7d43e0e39d86e718ece4b1418baf8c",
     ".agents/skills/write-a-skill/SKILL.md": "ff1577145d529ab792c0fb681626fe14d8e33d6c8ff55cb39cae49fdac0c4b17",
     ".agents/skills/write-docs/SKILL.md": "32e754301afaa771f77dc0869003ace3867ca37a7c8a63b056644edd2dafeb8a",
-    ".agents/skills/write-just/SKILL.md": "0e03702a2e726ff9b08bc6cddff3997e5e8c12682767e528775245e609c41faf",
-    ".agents/skills/write-just/references/command-map.md": "b9f3725ca9e0f2611e7d98d3bbf7dd524efd2d67cb91afd42f8c95b65fef8dcc",
+    ".agents/skills/write-just/SKILL.md": "53d660c99e0f75d13e5942b4e02eb58ce4b930fdc69382ec00a3f847178ffd3c",
+    ".agents/skills/write-just/references/command-map.md": "4cb6e5e7b7e8919ce21ecebf7eca6d2c2d6514def5dad1252fe979203bcc00f5",
     ".agents/skills/write-just/scripts/check-just.sh": "3e44d53b2e0f239f56a37b7ebe6fddc3cfcd3f976e137c4364997043726d05df",
     ".cargo/config.toml": "76f77c5a88431a3462c78a9b3a9f885540d75dce46cda78e99894bdbcbaa8b4a",
     ".gitattributes": "c7deeb8ad39e970b96fe7fb4e57bffc89ee1be0bb9479e740dc641c2bce4c667",

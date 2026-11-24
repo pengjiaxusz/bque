@@ -27,7 +27,7 @@ Never create root `scripts/` or root `just/` — those names belong to the proje
 
 1. **Wrap every heavy command when `bque` is in `layers`** — including `cargo run`. Use `bque run -- <cmd>`; benchmarks use `bque bench -- <cmd>`. A raw `cargo run/build/clippy/test/bench`, `ninja`, `cmake --build`, `ctest`, or `pnpm build` is a defect.
 2. **No bque layer?** A direct command is the legitimate downgrade of the current layer — say so in a comment, and do not present it as the recommended endpoint. Never force raw `bque` into Unix/CI.
-3. **Platform pairs**: if Windows and Unix differ, write both `[windows]` and `[unix]` recipes. bque is a Windows-only global lock; the `[unix]` branch passes the command straight through — that is expected, not a bypass.
+3. **Platform pairs**: if Windows and Unix differ, write both `[windows]` and `[unix]` recipes. bque supports both Windows and Linux/WSL2, while generated `[unix]` recipes intentionally pass through so CI runners stay zero-dependency — that is expected, not a bypass.
 4. **Variadic args**: declare `*ARGS` and forward with `{{ARGS}}`. There is no ad-hoc wrapper recipe (`just q-run` is gone): one-off heavy commands call `bque run -- <cmd>` / `bque bench -- <cmd>` directly, and a command that keeps coming back gets its own recipe here.
 
 ## 3. Minimal correct recipe
