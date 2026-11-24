@@ -1,5 +1,8 @@
-use super::activity::{ActivityGovernorConfig, evaluate_target_cpu_rate};
+use super::activity::{
+    ActivityGovernorConfig, apply_oversubscription_share, evaluate_target_cpu_rate_excluding,
+};
 use crate::job::JobObject;
+use crate::state::StateStorage;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -11,7 +14,15 @@ pub struct GovernorWorker {
 }
 
 impl GovernorWorker {
-    pub fn start(job_object: Arc<JobObject>, initial_rate: u32, hard_cap: bool) -> Self {
+    pub fn start(
+        job_object: Arc<JobObject>,
+        storage: StateStorage,
+        pid: u32,
+        my_weight: u32,
+        observer: bool,
+        initial_rate: u32,
+        hard_cap: bool,
+    ) -> Self {
         let stop_signal = Arc::new(AtomicBool::new(false));
         let stop_clone = stop_signal.clone();
         let config = ActivityGovernorConfig::default();
@@ -19,16 +30,31 @@ impl GovernorWorker {
         let thread_handle = thread::spawn(move || {
             let mut last_rate = initial_rate;
             while !stop_clone.load(Ordering::Relaxed) {
-                thread::sleep(Duration::from_secs(5));
-                if stop_clone.load(Ordering::Relaxed) {
-                    break;
+                // Sleep in short slices so shutdown on Drop is responsive.
+                for _ in 0..10 {
+                    thread::sleep(Duration::from_millis(500));
+                    if stop_clone.load(Ordering::Relaxed) {
+                        return;
+                    }
                 }
 
-                let target_rate = evaluate_target_cpu_rate(&config);
+                let bque_cpu = storage.total_active_cpu_pct();
+                let host_rate = evaluate_target_cpu_rate_excluding(&config, bque_cpu);
+                let target_rate = if observer {
+                    host_rate
+                } else {
+                    let tasks = storage.list_active_tasks().unwrap_or_default();
+                    let active_weight = StateStorage::effective_budget_used(&tasks);
+                    apply_oversubscription_share(host_rate, my_weight, active_weight)
+                };
+
                 if target_rate != last_rate
                     && job_object.set_cpu_rate(target_rate, hard_cap).is_ok()
                 {
                     last_rate = target_rate;
+                    if !observer {
+                        let _ = storage.update_task_cpu_rate(pid, target_rate);
+                    }
                 }
             }
         });
