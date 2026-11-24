@@ -109,8 +109,17 @@ bque run --desc "编译 Web 前端" -- cmake --build build
 # 限制 CPU 软上限为 50%
 bque run --cpu-rate 50 -- cargo test
 
-# 观察者模式（仅在状态中登记并限流，不阻塞编译队列排队）
-bque run --observer --desc "代码检查" -- cargo clippy
+# 轻量任务（仅占用 25/100 预算，可与其他轻量任务并发）
+bque run --weight light --desc "代码检查" -- cargo clippy
+
+# 局部互斥作用域（同一 scope 内即使进入 Yielding 也不并发）
+bque run --scope web-build -- cmake --build build
+
+# 自动让槽与看门狗保险丝（超时或停滞时强杀进程树并返回退出码 124）
+bque run --yield-after 10 --stall-timeout 300 --max-duration 1800 -- cargo test
+
+# 观察者模式（仅在状态中登记并限流，不消耗队列预算）
+bque run --observer --desc "开发服务" -- cargo run -q -p xtask -- dev
 ```
 
 ### 2. 纯净跑分保护（`bque bench`）
@@ -163,6 +172,8 @@ bque status
 
 ```powershell
 bque pause --reason "打游戏免打扰"
+# 冻结活跃构建但保留 observer（如 dev server）：
+bque pause --keep-observers --reason "交互式分析"
 # 完成后恢复：
 bque resume
 ```

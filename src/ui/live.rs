@@ -63,19 +63,28 @@ impl LiveProgressReporter {
                 format!("Blocked by Benchmark PID {}", bench.pid)
             } else if let Some(pause) = &status.pause_state {
                 format!("Blocked by Pause '{}'", pause.reason)
-            } else if let Some(lock) = &status.active_lock {
-                let held = (chrono::Utc::now().timestamp() - lock.start_time.timestamp()).max(0);
+            } else if !status.active_tasks.is_empty() {
+                let first = &status.active_tasks[0];
+                let held = (chrono::Utc::now().timestamp() - first.start_time.timestamp()).max(0);
                 if held as u64 >= super::status::LONG_HOLD_HINT_SECS {
                     format!(
-                        "Waiting for Lock Holder PID {} (already holding {}: dev servers should run with --observer)",
-                        lock.pid,
+                        "Waiting on budget {}/{} (PID {} holding {}: dev servers should run with --observer)",
+                        status.budget_used,
+                        status.budget_total,
+                        first.pid,
                         format_duration_secs(held as u64)
                     )
                 } else {
-                    format!("Waiting for Lock Holder PID {}", lock.pid)
+                    format!(
+                        "Waiting on budget {}/{} ({} active task(s), lead PID {})",
+                        status.budget_used,
+                        status.budget_total,
+                        status.active_tasks.len(),
+                        first.pid
+                    )
                 }
             } else {
-                "Waiting for lock".to_string()
+                "Waiting for budget".to_string()
             };
 
             let state_key = format!("pos:{},{}", pos, summary);
@@ -114,7 +123,7 @@ impl LiveProgressReporter {
 
         if elapsed_secs >= 1 {
             println!(
-                "{} {} Lock acquired after {}. Running: {}",
+                "{} {} Budget acquired after {}. Running: {}",
                 self.theme.badge_bque(),
                 self.theme.bold_green("🚀"),
                 self.theme.green(&format_duration_secs(elapsed_secs)),

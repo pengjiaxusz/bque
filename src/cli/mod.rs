@@ -1,6 +1,32 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+/// Parse `--weight` accepting either named tiers (`light`, `medium`, `heavy`)
+/// or an explicit integer in `1..=100`.
+pub fn parse_weight(raw: &str) -> Result<u32, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "light" => Ok(25),
+        "medium" => Ok(50),
+        "heavy" => Ok(100),
+        other => {
+            let val: u32 = other.parse().map_err(|_| {
+                format!(
+                    "Invalid weight '{}': expected 1-100 or one of 'light' (25), 'medium' (50), 'heavy' (100)",
+                    raw
+                )
+            })?;
+            if (1..=100).contains(&val) {
+                Ok(val)
+            } else {
+                Err(format!(
+                    "Weight {} out of range: must be between 1 and 100",
+                    val
+                ))
+            }
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "bque",
@@ -15,13 +41,13 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Execute a command under global queue lock with priority and CPU budget limits
+    /// Execute a command under global queue budget with priority, yielding, and CPU limits
     Run(RunArgs),
 
     /// Execute a benchmark under exclusive lock, automatically freezing background builds
     Bench(BenchArgs),
 
-    /// Show current lock holder, queue waiters, observers, and system budget status
+    /// Show current active tasks, budget usage, queue waiters, and observers
     Status(StatusArgs),
 
     /// Probe host CPU, memory, swap, disk capacity, and recommended build concurrency
@@ -71,6 +97,30 @@ pub struct RunArgs {
     #[arg(short = 'p', long, value_enum, default_value = "idle")]
     pub priority: PriorityArg,
 
+    /// Budget weight claimed from the 100-unit host pool (1-100, or light/medium/heavy)
+    #[arg(short = 'w', long, default_value = "heavy", value_parser = parse_weight)]
+    pub weight: u32,
+
+    /// Optional mutual-exclusion scope key (never overlaps even when Yielding)
+    #[arg(long)]
+    pub scope: Option<String>,
+
+    /// Seconds of sustained low CPU (<5%) before yielding budget to queued waiters
+    #[arg(long, default_value_t = 10)]
+    pub yield_after: u64,
+
+    /// Disable automatic budget yielding during low-CPU phases
+    #[arg(long, default_value_t = false)]
+    pub no_yield: bool,
+
+    /// Opt-in stall watchdog: terminate child tree (exit 124) after N seconds at <0.5% CPU
+    #[arg(long)]
+    pub stall_timeout: Option<u64>,
+
+    /// Opt-in hard execution duration limit in seconds (terminates child tree, exit 124)
+    #[arg(long)]
+    pub max_duration: Option<u64>,
+
     /// CPU rate limit percentage (1-100) enforced via Windows Job Object soft-cap
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=100))]
     pub cpu_rate: Option<u32>,
@@ -87,7 +137,7 @@ pub struct RunArgs {
     #[arg(long)]
     pub cores: Option<String>,
 
-    /// Observer mode: register in status and apply limits, but do not acquire mutual exclusion
+    /// Observer mode: register in status and apply limits, but do not consume queue budget
     #[arg(long, default_value_t = false)]
     pub observer: bool,
 
@@ -159,12 +209,16 @@ pub struct PauseArgs {
     /// Optional reason for manual pause
     #[arg(short = 'r', long, default_value = "Manual user pause")]
     pub reason: String,
+
+    /// Keep observer processes (such as dev servers) running instead of freezing them
+    #[arg(long, default_value_t = false)]
+    pub keep_observers: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct CleanArgs {
     /// Also drop records whose owner still looks alive (emergency unblock).
-    /// The kernel mutex stays authoritative, so a running build is not interrupted.
+    /// Resumes any frozen processes recorded in bench or pause state.
     #[arg(long, default_value_t = false)]
     pub force: bool,
 }
@@ -200,5 +254,21 @@ impl std::fmt::Display for PriorityArg {
             PriorityArg::Normal => write!(f, "Normal"),
             PriorityArg::High => write!(f, "High"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn weight_parser_accepts_tiers_and_numeric_values() {
+        assert_eq!(parse_weight("light").unwrap(), 25);
+        assert_eq!(parse_weight("medium").unwrap(), 50);
+        assert_eq!(parse_weight("heavy").unwrap(), 100);
+        assert_eq!(parse_weight("40").unwrap(), 40);
+        assert!(parse_weight("0").is_err());
+        assert!(parse_weight("101").is_err());
+        assert!(parse_weight("tiny").is_err());
     }
 }

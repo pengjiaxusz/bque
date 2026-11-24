@@ -1,11 +1,24 @@
 use crate::cli::BenchArgs;
-use crate::job::{CpuTopology, ProcessFreezer, apply_process_affinity, apply_process_priority};
+use crate::job::{
+    CpuTopology, FreezeGuard, ProcessFreezer, apply_process_affinity, apply_process_priority,
+};
 use crate::lock::{NamedMutex, bench_mutex_name};
 use crate::runner::{display_cwd, execute_child_command};
+use crate::state::process::ProcessIdentity;
 use crate::state::{BenchState, StateHeartbeat, StateStorage};
 use crate::ui::{ColorTheme, LiveProgressReporter};
 use anyhow::{Result, anyhow};
 use std::time::Duration;
+
+struct BenchRecordGuard {
+    storage: StateStorage,
+}
+
+impl Drop for BenchRecordGuard {
+    fn drop(&mut self) {
+        let _ = self.storage.clear_bench_state();
+    }
+}
 
 pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
     if args.command.is_empty() {
@@ -41,8 +54,6 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
     let start_wait = std::time::Instant::now();
 
     let _guard = bench_mutex.acquire_with_progress(timeout, |elapsed| {
-        // Heal phantom records so a dead benchmark or waiter never keeps this
-        // run waiting.
         let _ = storage.reap();
         if let Ok(status) = storage.get_full_status() {
             reporter.tick_bench(&status, elapsed.as_secs());
@@ -51,49 +62,65 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
     })?;
     reporter.finish_bench_acquired(start_wait.elapsed().as_secs());
 
-    // Suspend background build if active and requested
-    let mut frozen_pids = Vec::new();
-    let active_build = if args.freeze_builds {
-        storage.load_lock_state().ok().flatten()
-    } else {
-        None
-    };
+    // Suspend all active managed tasks and observers when requested.
+    let mut frozen_identities: Vec<ProcessIdentity> = Vec::new();
+    if args.freeze_builds {
+        let active_tasks = storage.list_active_tasks().unwrap_or_default();
+        let observers = storage.list_observers().unwrap_or_default();
 
-    if let Some(active) = active_build {
-        println!(
-            "{} ⏸️  Freezing active background build PID {} ('{}')...",
-            theme.badge_bench(),
-            theme.bold_cyan(&active.pid.to_string()),
-            theme.white(&active.description)
-        );
-        match freezer.suspend_process_tree(active.pid) {
-            Ok(pids) => {
-                println!(
-                    "{} Successfully suspended {} processes in build tree.",
+        for task in &active_tasks {
+            println!(
+                "{} ⏸️  Freezing active task PID {} ('{}')...",
+                theme.badge_bench(),
+                theme.bold_cyan(&task.pid.to_string()),
+                theme.white(&task.description)
+            );
+            match freezer.suspend_process_tree_identities(task.pid) {
+                Ok(ids) => frozen_identities.extend(ids),
+                Err(e) => eprintln!(
+                    "{} Warning: Failed to suspend active task PID {}: {}",
                     theme.badge_bench(),
-                    theme.bold_green(&pids.len().to_string())
-                );
-                frozen_pids = pids;
-            }
-            Err(e) => {
-                eprintln!(
-                    "{} Warning: Failed to suspend background build PID {}: {}",
-                    theme.badge_bench(),
-                    active.pid,
+                    task.pid,
                     e
-                );
+                ),
             }
+        }
+
+        for obs in &observers {
+            match freezer.suspend_process_tree_identities(obs.pid) {
+                Ok(ids) => frozen_identities.extend(ids),
+                Err(e) => eprintln!(
+                    "{} Warning: Failed to suspend observer PID {}: {}",
+                    theme.badge_bench(),
+                    obs.pid,
+                    e
+                ),
+            }
+        }
+
+        if !frozen_identities.is_empty() {
+            println!(
+                "{} Successfully suspended {} process(es) across background trees.",
+                theme.badge_bench(),
+                theme.bold_green(&frozen_identities.len().to_string())
+            );
         }
     }
 
+    // Declare RAII guards before saving state / spawning child so every exit
+    // path (error, panic, or normal return) resumes frozen trees and clears state.
+    let mut freeze_guard = FreezeGuard::new(frozen_identities.clone());
     let state = BenchState::record(
-        std::process::id(),
+        my_pid,
         args.command.join(" "),
         desc.clone(),
         display_cwd(args.cwd.as_deref()),
-        frozen_pids.clone(),
+        frozen_identities,
     );
     storage.save_bench_state(&state)?;
+    let _bench_record_guard = BenchRecordGuard {
+        storage: storage.clone(),
+    };
     let _heartbeat = StateHeartbeat::start_bench(storage.clone(), state.pid);
 
     // Apply benchmark priority (default: High)
@@ -144,33 +171,25 @@ pub fn run_benchmark(args: BenchArgs) -> Result<i32> {
         theme.bold_white(&desc)
     );
 
-    // Pass environment variable for reentrant calls in benchmark
     unsafe {
         std::env::set_var("BQUE_ACTIVE_PID", my_pid.to_string());
     }
     let exit_code = execute_child_command(&args.command, args.cwd.as_deref(), None)?;
 
-    // Clean up: resume frozen background builds
-    if !frozen_pids.is_empty() {
-        println!(
-            "{} Resuming frozen background build processes...",
-            theme.badge_bench()
-        );
-        match freezer.resume_processes(&frozen_pids) {
-            Ok(count) => println!(
-                "{} Resumed {} processes.",
-                theme.badge_bench(),
-                theme.bold_green(&count.to_string())
-            ),
-            Err(e) => eprintln!(
-                "{} Warning: Failed to resume processes: {}",
-                theme.badge_bench(),
-                e
-            ),
-        }
+    match freeze_guard.resume_now() {
+        Ok(count) if count > 0 => println!(
+            "{} Resumed {} frozen background process(es).",
+            theme.badge_bench(),
+            theme.bold_green(&count.to_string())
+        ),
+        Ok(_) => {}
+        Err(e) => eprintln!(
+            "{} Warning: Failed to resume processes: {}",
+            theme.badge_bench(),
+            e
+        ),
     }
 
-    let _ = storage.clear_bench_state();
     println!(
         "{} Benchmark finished with exit code {}.",
         theme.badge_bench(),

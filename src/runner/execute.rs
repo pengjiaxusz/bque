@@ -1,14 +1,30 @@
-use crate::job::JobObject;
+use crate::job::{JobObject, cpu_delta_to_host_pct};
+use crate::state::{ActivityState, StateStorage};
 use anyhow::{Context, Result, anyhow};
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::sync::Once;
 #[cfg(unix)]
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::AtomicI32;
+
+/// Exit code returned when `--stall-timeout` or `--max-duration` terminates a task.
+pub const WATCHDOG_EXIT_CODE: i32 = 124;
+
+/// Host-normalized CPU percentage below which a task is considered low-activity
+/// for Yielding purposes.
+const YIELD_CPU_THRESHOLD_PCT: f64 = 5.0;
+/// Host-normalized CPU percentage below which a task is considered stalled for
+/// `--stall-timeout` purposes.
+const STALL_CPU_THRESHOLD_PCT: f64 = 0.5;
+/// Sampling cadence for the background activity & watchdog thread.
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 
 #[cfg(unix)]
 static ACTIVE_CHILD_PGID: AtomicI32 = AtomicI32::new(0);
@@ -27,6 +43,16 @@ fn install_signal_forwarder() {
             }
         });
     });
+}
+
+/// Configuration for the execution-phase activity monitor and watchdog.
+pub struct MonitorConfig {
+    pub storage: StateStorage,
+    pub pid: u32,
+    pub observer: bool,
+    pub yield_after_secs: Option<u64>,
+    pub stall_timeout_secs: Option<u64>,
+    pub max_duration_secs: Option<u64>,
 }
 
 #[cfg(windows)]
@@ -88,10 +114,6 @@ fn resolve_program(program: &str) -> std::path::PathBuf {
 }
 
 /// Absolute working directory recorded in the queue for display.
-///
-/// A relative `--cwd` is still handed to the child unchanged (that is the
-/// caller's intent), but the dashboard has to name a real place: a queued job
-/// that only shows `..\sibling` cannot be traced back to its worktree.
 pub fn display_cwd(cwd: Option<&Path>) -> String {
     let absolute = match cwd {
         Some(path) if path.is_absolute() => path.to_path_buf(),
@@ -107,6 +129,32 @@ pub fn execute_child_command(
     command_args: &[String],
     cwd: Option<&Path>,
     job_object: Option<&JobObject>,
+) -> Result<i32> {
+    execute_child_command_internal(command_args, cwd, job_object, None, None)
+}
+
+pub fn execute_child_command_monitored(
+    command_args: &[String],
+    cwd: Option<&Path>,
+    job_object: Option<Arc<JobObject>>,
+    monitor: MonitorConfig,
+) -> Result<i32> {
+    let job_ref = job_object.as_deref();
+    execute_child_command_internal(
+        command_args,
+        cwd,
+        job_ref,
+        job_object.clone(),
+        Some(monitor),
+    )
+}
+
+fn execute_child_command_internal(
+    command_args: &[String],
+    cwd: Option<&Path>,
+    job_object: Option<&JobObject>,
+    job_arc: Option<Arc<JobObject>>,
+    monitor: Option<MonitorConfig>,
 ) -> Result<i32> {
     if command_args.is_empty() {
         return Err(anyhow!("Command argument list is empty"));
@@ -132,8 +180,8 @@ pub fn execute_child_command(
         use std::os::unix::process::CommandExt;
 
         install_signal_forwarder();
-        // Place the child in its own process group so signals and cleanup
-        // reach every descendant compiler process.
+        // Place the child in its own process group so signals, CPU accounting,
+        // and cleanup reach every descendant compiler process.
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setpgid(0, 0) != 0 {
@@ -171,9 +219,27 @@ pub fn execute_child_command(
         }
     }
 
+    let stop_monitor = Arc::new(AtomicBool::new(false));
+    let killed_by_watchdog = Arc::new(AtomicBool::new(false));
+
+    let monitor_handle = if let (Some(cfg), Some(job)) = (monitor, job_arc) {
+        let stop = Arc::clone(&stop_monitor);
+        let killed = Arc::clone(&killed_by_watchdog);
+        Some(std::thread::spawn(move || {
+            run_activity_monitor(cfg, job, stop, killed);
+        }))
+    } else {
+        None
+    };
+
     let status = child
         .wait()
         .with_context(|| format!("Error while waiting for child process '{}'", program))?;
+
+    stop_monitor.store(true, Ordering::SeqCst);
+    if let Some(handle) = monitor_handle {
+        let _ = handle.join();
+    }
 
     #[cfg(unix)]
     {
@@ -181,6 +247,10 @@ pub fn execute_child_command(
         if let Some(job) = job_object {
             job.clear_process();
         }
+    }
+
+    if killed_by_watchdog.load(Ordering::SeqCst) {
+        return Ok(WATCHDOG_EXIT_CODE);
     }
 
     #[cfg(unix)]
@@ -196,4 +266,102 @@ pub fn execute_child_command(
     let exit_code = status.code().unwrap_or(-1);
 
     Ok(exit_code)
+}
+
+fn run_activity_monitor(
+    cfg: MonitorConfig,
+    job: Arc<JobObject>,
+    stop: Arc<AtomicBool>,
+    killed_by_watchdog: Arc<AtomicBool>,
+) {
+    let logical_cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(1);
+    let started_at = Instant::now();
+    let mut last_sample_at = Instant::now();
+    let mut last_cpu_ms = job.total_cpu_time_ms().unwrap_or(0);
+    let mut low_cpu_ms: u64 = 0;
+    let mut stall_cpu_ms: u64 = 0;
+    let mut activity_state = ActivityState::Active;
+
+    while !stop.load(Ordering::Relaxed) {
+        // Sleep in 250ms slices so shutdown is responsive when the child exits.
+        let mut slept = Duration::ZERO;
+        while slept < SAMPLE_INTERVAL {
+            let step = Duration::from_millis(250).min(SAMPLE_INTERVAL - slept);
+            std::thread::sleep(step);
+            slept += step;
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            if let Some(max_secs) = cfg.max_duration_secs
+                && started_at.elapsed() >= Duration::from_secs(max_secs)
+            {
+                eprintln!(
+                    "[bque] Watchdog: max duration ({}s) exceeded; terminating child process tree (exit {}).",
+                    max_secs, WATCHDOG_EXIT_CODE
+                );
+                killed_by_watchdog.store(true, Ordering::SeqCst);
+                let _ = job.terminate(WATCHDOG_EXIT_CODE as u32);
+                return;
+            }
+        }
+
+        let now = Instant::now();
+        let elapsed_ms = now.duration_since(last_sample_at).as_millis() as u64;
+        last_sample_at = now;
+
+        let current_cpu_ms = job.total_cpu_time_ms().unwrap_or(last_cpu_ms);
+        let delta_cpu_ms = current_cpu_ms.saturating_sub(last_cpu_ms);
+        last_cpu_ms = current_cpu_ms;
+
+        let cpu_pct = cpu_delta_to_host_pct(delta_cpu_ms, elapsed_ms, logical_cores);
+
+        if cpu_pct < YIELD_CPU_THRESHOLD_PCT {
+            low_cpu_ms = low_cpu_ms.saturating_add(elapsed_ms);
+        } else {
+            low_cpu_ms = 0;
+        }
+
+        if cpu_pct < STALL_CPU_THRESHOLD_PCT {
+            stall_cpu_ms = stall_cpu_ms.saturating_add(elapsed_ms);
+        } else {
+            stall_cpu_ms = 0;
+        }
+
+        let low_cpu_secs = low_cpu_ms / 1_000;
+        let stall_secs = stall_cpu_ms / 1_000;
+
+        if !cfg.observer {
+            if let Some(yield_after) = cfg.yield_after_secs {
+                if low_cpu_secs >= yield_after {
+                    activity_state = ActivityState::Yielding;
+                } else if cpu_pct >= YIELD_CPU_THRESHOLD_PCT {
+                    activity_state = ActivityState::Active;
+                }
+            }
+            let _ = cfg.storage.update_task_activity(
+                cfg.pid,
+                cpu_pct,
+                low_cpu_secs,
+                activity_state,
+                None,
+            );
+        } else {
+            let _ = cfg.storage.touch_observer(cfg.pid);
+        }
+
+        if let Some(stall_limit) = cfg.stall_timeout_secs
+            && stall_secs >= stall_limit
+        {
+            eprintln!(
+                "[bque] Watchdog: task stalled at {:.1}% CPU for {}s (limit {}s); terminating child process tree (exit {}).",
+                cpu_pct, stall_secs, stall_limit, WATCHDOG_EXIT_CODE
+            );
+            killed_by_watchdog.store(true, Ordering::SeqCst);
+            let _ = job.terminate(WATCHDOG_EXIT_CODE as u32);
+            return;
+        }
+    }
 }

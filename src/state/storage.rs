@@ -1,3 +1,4 @@
+use crate::job::ProcessFreezer;
 use crate::state::process::{Liveness, ProcessIdentity, classify, system_time_from_unix_secs};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -6,9 +7,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+/// Total shared host budget units across all active managed tasks.
+pub const BUDGET_TOTAL: u32 = 100;
+/// Maximum seconds an earlier waiter may be bypassed by smaller backfill tasks.
+pub const BACKFILL_STARVATION_SECS: u64 = 60;
+
 /// How often a lock holder refreshes its heartbeat.
 pub const LOCK_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
-/// A lock record whose owner cannot be inspected is dropped after this lease.
+/// A lock/task record whose owner cannot be inspected is dropped after this lease.
 pub const LOCK_LEASE: Duration = Duration::from_secs(90);
 /// How often an observer refreshes its heartbeat.
 pub const OBSERVER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -25,6 +31,103 @@ pub const BENCH_LEASE: Duration = Duration::from_secs(120);
 /// Environment override for the state directory. Used by tests and by
 /// diagnostics that need to inspect an isolated queue.
 pub const STATE_DIR_ENV: &str = "BQUE_STATE_DIR";
+
+fn default_weight() -> u32 {
+    BUDGET_TOTAL
+}
+
+/// Live activity state of a managed task.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ActivityState {
+    /// Actively consuming its claimed budget.
+    #[default]
+    Active,
+    /// Sustained low CPU; temporarily lending its budget to queued waiters.
+    Yielding,
+}
+
+impl std::fmt::Display for ActivityState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ActivityState::Active => write!(f, "active"),
+            ActivityState::Yielding => write!(f, "yielding"),
+        }
+    }
+}
+
+/// Per-task state stored in `tasks/task_<pid>.json`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TaskState {
+    pub pid: u32,
+    pub start_time: DateTime<Utc>,
+    pub command: String,
+    pub description: String,
+    pub cwd: String,
+    pub priority: String,
+    pub cpu_rate: u32,
+    #[serde(default = "default_weight")]
+    pub weight: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub activity_state: ActivityState,
+    #[serde(default)]
+    pub cpu_pct: f64,
+    #[serde(default)]
+    pub low_cpu_secs: u64,
+    #[serde(default)]
+    pub identity: Option<ProcessIdentity>,
+    #[serde(default)]
+    pub heartbeat: Option<DateTime<Utc>>,
+}
+
+impl TaskState {
+    #[allow(clippy::too_many_arguments)]
+    pub fn record(
+        pid: u32,
+        command: String,
+        description: String,
+        cwd: String,
+        priority: String,
+        cpu_rate: u32,
+        weight: u32,
+        scope: Option<String>,
+    ) -> Self {
+        Self {
+            pid,
+            start_time: Utc::now(),
+            command,
+            description,
+            cwd,
+            priority,
+            cpu_rate,
+            weight: weight.clamp(1, BUDGET_TOTAL),
+            scope,
+            activity_state: ActivityState::Active,
+            cpu_pct: 0.0,
+            low_cpu_secs: 0,
+            identity: ProcessIdentity::capture(pid),
+            heartbeat: Some(Utc::now()),
+        }
+    }
+
+    /// Project into the legacy `LockState` shape for backward-compatible JSON.
+    pub fn to_legacy_lock_state(&self) -> LockState {
+        LockState {
+            pid: self.pid,
+            start_time: self.start_time,
+            command: self.command.clone(),
+            description: self.description.clone(),
+            cwd: self.cwd.clone(),
+            priority: self.priority.clone(),
+            cpu_rate: self.cpu_rate,
+            is_observer: false,
+            identity: self.identity,
+            heartbeat: self.heartbeat,
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LockState {
@@ -44,6 +147,27 @@ pub struct LockState {
     pub heartbeat: Option<DateTime<Utc>>,
 }
 
+impl LockState {
+    pub fn to_task_state(&self) -> TaskState {
+        TaskState {
+            pid: self.pid,
+            start_time: self.start_time,
+            command: self.command.clone(),
+            description: self.description.clone(),
+            cwd: self.cwd.clone(),
+            priority: self.priority.clone(),
+            cpu_rate: self.cpu_rate,
+            weight: BUDGET_TOTAL,
+            scope: None,
+            activity_state: ActivityState::Active,
+            cpu_pct: 0.0,
+            low_cpu_secs: 0,
+            identity: self.identity,
+            heartbeat: self.heartbeat,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct WaiterState {
     pub pid: u32,
@@ -51,6 +175,10 @@ pub struct WaiterState {
     pub command: String,
     pub description: String,
     pub cwd: String,
+    #[serde(default = "default_weight")]
+    pub weight: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     #[serde(default)]
     pub identity: Option<ProcessIdentity>,
     #[serde(default)]
@@ -68,6 +196,8 @@ pub struct BenchState {
     pub cwd: String,
     pub frozen_pids: Vec<u32>,
     #[serde(default)]
+    pub frozen_identities: Vec<ProcessIdentity>,
+    #[serde(default)]
     pub identity: Option<ProcessIdentity>,
     #[serde(default)]
     pub heartbeat: Option<DateTime<Utc>>,
@@ -78,6 +208,10 @@ pub struct PauseState {
     pub paused_at: DateTime<Utc>,
     pub reason: String,
     pub paused_by_pid: u32,
+    #[serde(default)]
+    pub frozen_identities: Vec<ProcessIdentity>,
+    #[serde(default)]
+    pub keep_observers: bool,
 }
 
 /// What a cleanup pass removed, so callers can report it instead of guessing.
@@ -86,6 +220,8 @@ pub struct ReapReport {
     #[serde(default)]
     pub lock: bool,
     #[serde(default)]
+    pub tasks: u32,
+    #[serde(default)]
     pub bench: bool,
     #[serde(default)]
     pub waiters: u32,
@@ -93,11 +229,14 @@ pub struct ReapReport {
     pub observers: u32,
     #[serde(default)]
     pub pause: bool,
+    #[serde(default)]
+    pub unfrozen: u32,
 }
 
 impl ReapReport {
     pub fn total(&self) -> u32 {
         u32::from(self.lock)
+            + self.tasks
             + u32::from(self.bench)
             + self.waiters
             + self.observers
@@ -105,13 +244,16 @@ impl ReapReport {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.total() == 0
+        self.total() == 0 && self.unfrozen == 0
     }
 
     pub fn describe(&self) -> String {
         let mut parts = Vec::new();
         if self.lock {
             parts.push("active lock".to_string());
+        }
+        if self.tasks > 0 {
+            parts.push(format!("{} task(s)", self.tasks));
         }
         if self.bench {
             parts.push("benchmark".to_string());
@@ -125,6 +267,9 @@ impl ReapReport {
         if self.pause {
             parts.push("manual pause".to_string());
         }
+        if self.unfrozen > 0 {
+            parts.push(format!("unfroze {} orphan process(es)", self.unfrozen));
+        }
         if parts.is_empty() {
             "nothing".to_string()
         } else {
@@ -135,7 +280,17 @@ impl ReapReport {
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct FullQueueStatus {
+    /// Legacy single-lock field populated from the first active task for
+    /// backward compatibility with existing JSON consumers.
     pub active_lock: Option<LockState>,
+    #[serde(default)]
+    pub active_tasks: Vec<TaskState>,
+    #[serde(default)]
+    pub budget_used: u32,
+    #[serde(default = "default_weight")]
+    pub budget_total: u32,
+    #[serde(default)]
+    pub oversubscribed: bool,
     pub active_bench: Option<BenchState>,
     pub pause_state: Option<PauseState>,
     pub waiters: Vec<WaiterState>,
@@ -171,13 +326,22 @@ impl LockState {
 }
 
 impl WaiterState {
-    pub fn record(pid: u32, command: String, description: String, cwd: String) -> Self {
+    pub fn record(
+        pid: u32,
+        command: String,
+        description: String,
+        cwd: String,
+        weight: u32,
+        scope: Option<String>,
+    ) -> Self {
         Self {
             pid,
             queued_at: Utc::now(),
             command,
             description,
             cwd,
+            weight: weight.clamp(1, BUDGET_TOTAL),
+            scope,
             identity: ProcessIdentity::capture(pid),
             heartbeat: Some(Utc::now()),
         }
@@ -190,8 +354,9 @@ impl BenchState {
         command: String,
         description: String,
         cwd: String,
-        frozen_pids: Vec<u32>,
+        frozen_identities: Vec<ProcessIdentity>,
     ) -> Self {
+        let frozen_pids = frozen_identities.iter().map(|id| id.pid).collect();
         Self {
             pid,
             start_time: Utc::now(),
@@ -199,6 +364,7 @@ impl BenchState {
             description,
             cwd,
             frozen_pids,
+            frozen_identities,
             identity: ProcessIdentity::capture(pid),
             heartbeat: Some(Utc::now()),
         }
@@ -213,6 +379,15 @@ trait HeartbeatRecord: Serialize + DeserializeOwned {
 }
 
 impl HeartbeatRecord for LockState {
+    fn record_pid(&self) -> u32 {
+        self.pid
+    }
+    fn set_heartbeat(&mut self, at: DateTime<Utc>) {
+        self.heartbeat = Some(at);
+    }
+}
+
+impl HeartbeatRecord for TaskState {
     fn record_pid(&self) -> u32 {
         self.pid
     }
@@ -278,6 +453,7 @@ impl StateStorage {
     pub fn new() -> Result<Self> {
         let root = resolve_state_dir();
         fs::create_dir_all(&root).context("Failed to create bque state directory")?;
+        fs::create_dir_all(root.join("tasks")).context("Failed to create tasks directory")?;
         fs::create_dir_all(root.join("waiters")).context("Failed to create waiters directory")?;
         fs::create_dir_all(root.join("observers"))
             .context("Failed to create observers directory")?;
@@ -286,6 +462,12 @@ impl StateStorage {
 
     pub fn lock_file_path(&self) -> PathBuf {
         self.root_dir.join("lock_state.json")
+    }
+
+    pub fn task_file_path(&self, pid: u32) -> PathBuf {
+        self.root_dir
+            .join("tasks")
+            .join(format!("task_{}.json", pid))
     }
 
     pub fn bench_file_path(&self) -> PathBuf {
@@ -308,8 +490,104 @@ impl StateStorage {
             .join(format!("observer_{}.json", pid))
     }
 
-    pub fn save_lock_state(&self, state: &LockState) -> Result<()> {
-        atomic_write(&self.lock_file_path(), &to_json(state)?)
+    pub fn register_task(&self, state: &TaskState) -> Result<()> {
+        atomic_write(&self.task_file_path(state.pid), &to_json(state)?)
+    }
+
+    pub fn unregister_task(&self, pid: u32) -> Result<()> {
+        let path = self.task_file_path(pid);
+        if path.exists() {
+            let _ = fs::remove_file(path);
+        }
+        Ok(())
+    }
+
+    /// Update a live task's activity metrics, yielding state, optional CPU rate,
+    /// and heartbeat in one atomic write.
+    pub fn update_task_activity(
+        &self,
+        pid: u32,
+        cpu_pct: f64,
+        low_cpu_secs: u64,
+        activity_state: ActivityState,
+        cpu_rate: Option<u32>,
+    ) -> Result<()> {
+        let path = self.task_file_path(pid);
+        let Some(mut record) = load_json_file::<TaskState>(&path) else {
+            return Ok(());
+        };
+        if record.pid != pid {
+            return Ok(());
+        }
+        record.cpu_pct = cpu_pct;
+        record.low_cpu_secs = low_cpu_secs;
+        record.activity_state = activity_state;
+        if let Some(rate) = cpu_rate {
+            record.cpu_rate = rate;
+        }
+        record.heartbeat = Some(Utc::now());
+        atomic_write(&path, &to_json(&record)?)
+    }
+
+    pub fn update_task_cpu_rate(&self, pid: u32, cpu_rate: u32) -> Result<()> {
+        let path = self.task_file_path(pid);
+        let Some(mut record) = load_json_file::<TaskState>(&path) else {
+            return Ok(());
+        };
+        if record.pid != pid {
+            return Ok(());
+        }
+        record.cpu_rate = cpu_rate;
+        atomic_write(&path, &to_json(&record)?)
+    }
+
+    pub fn list_active_tasks(&self) -> Result<Vec<TaskState>> {
+        let (mut tasks, _) = self.scan_tasks()?;
+        if let Some(legacy) = self.load_lock_state()?
+            && !tasks.iter().any(|t| t.pid == legacy.pid)
+        {
+            tasks.push(legacy.to_task_state());
+        }
+        tasks.sort_by_key(|t| t.start_time);
+        Ok(tasks)
+    }
+
+    /// Sum of `weight` across tasks currently in `Active` state (Yielding tasks
+    /// lend their budget and contribute 0).
+    pub fn effective_budget_used(tasks: &[TaskState]) -> u32 {
+        tasks
+            .iter()
+            .filter(|t| t.activity_state == ActivityState::Active)
+            .map(|t| t.weight)
+            .sum()
+    }
+
+    /// Total host CPU percentage currently consumed by all active managed tasks.
+    pub fn total_active_cpu_pct(&self) -> f64 {
+        let tasks = self.list_active_tasks().unwrap_or_default();
+        tasks
+            .iter()
+            .map(|t| t.cpu_pct)
+            .sum::<f64>()
+            .clamp(0.0, 100.0)
+    }
+
+    /// Evaluate whether waiter `my_pid` with `(weight, scope)` can be admitted
+    /// right now under Budget, Scope, and Bounded Backfill rules.
+    pub fn can_admit(&self, my_pid: u32, weight: u32, scope: Option<&str>) -> Result<bool> {
+        if self.load_bench_state()?.is_some() || self.load_pause_state()?.is_some() {
+            return Ok(false);
+        }
+        let active_tasks = self.list_active_tasks()?;
+        let waiters = self.list_waiters()?;
+        Ok(evaluate_admission(
+            &active_tasks,
+            &waiters,
+            my_pid,
+            weight,
+            scope,
+            Utc::now(),
+        ))
     }
 
     pub fn load_lock_state(&self) -> Result<Option<LockState>> {
@@ -324,27 +602,13 @@ impl StateStorage {
         }
     }
 
-    pub fn clear_lock_state(&self, expected_pid: Option<u32>) -> Result<()> {
-        let path = self.lock_file_path();
-        if !path.exists() {
-            return Ok(());
-        }
-
-        if let Some(pid) = expected_pid {
-            let current = load_json_file::<LockState>(&path).map(|s| s.pid);
-            if current != Some(pid) {
-                return Ok(());
-            }
-        }
-
-        let _ = fs::remove_file(&path);
-        Ok(())
-    }
-
-    /// Refresh the heartbeat of the lock record, but only while it still belongs
-    /// to `pid` — a forced cleanup must not be resurrected by a heartbeat.
+    #[allow(dead_code)]
     pub fn touch_lock_state(&self, pid: u32) -> Result<()> {
         self.touch::<LockState>(self.lock_file_path(), pid)
+    }
+
+    pub fn touch_task(&self, pid: u32) -> Result<()> {
+        self.touch::<TaskState>(self.task_file_path(pid), pid)
     }
 
     pub fn touch_bench_state(&self, pid: u32) -> Result<()> {
@@ -415,7 +679,8 @@ impl StateStorage {
         let path = self.bench_file_path();
         match load_json_file::<BenchState>(&path) {
             Some(state) if bench_record_is_live(&state) => Ok(Some(state)),
-            Some(_) => {
+            Some(stale) => {
+                unfreeze_orphaned_bench(&stale);
                 let _ = fs::remove_file(&path);
                 Ok(None)
             }
@@ -449,8 +714,15 @@ impl StateStorage {
 
     pub fn get_full_status(&self) -> Result<FullQueueStatus> {
         let reaped = self.reap()?;
+        let active_tasks = self.list_active_tasks()?;
+        let budget_used = Self::effective_budget_used(&active_tasks);
+        let active_lock = active_tasks.first().map(TaskState::to_legacy_lock_state);
         Ok(FullQueueStatus {
-            active_lock: self.load_lock_state()?,
+            active_lock,
+            active_tasks,
+            budget_used,
+            budget_total: BUDGET_TOTAL,
+            oversubscribed: budget_used > BUDGET_TOTAL,
             active_bench: self.load_bench_state()?,
             pause_state: self.load_pause_state()?,
             waiters: self.list_waiters()?,
@@ -460,10 +732,7 @@ impl StateStorage {
     }
 
     /// Drop every record whose owner is provably gone, however it is proved.
-    ///
-    /// This is the single healing pass used by `status`, by the queue wait loop
-    /// and by `clean`, so a phantom entry can never survive long enough to make
-    /// the queue look jammed.
+    /// Also unfreezes any processes left suspended by a crashed benchmark.
     pub fn reap(&self) -> Result<ReapReport> {
         let mut report = ReapReport::default();
 
@@ -481,25 +750,28 @@ impl StateStorage {
 
         let bench_path = self.bench_file_path();
         if bench_path.exists() {
-            let stale = match load_json_file::<BenchState>(&bench_path) {
-                Some(state) => !bench_record_is_live(&state),
-                None => true,
-            };
-            if stale {
-                let _ = fs::remove_file(&bench_path);
-                report.bench = true;
+            match load_json_file::<BenchState>(&bench_path) {
+                Some(state) if bench_record_is_live(&state) => {}
+                Some(stale) => {
+                    report.unfrozen += unfreeze_orphaned_bench(&stale);
+                    let _ = fs::remove_file(&bench_path);
+                    report.bench = true;
+                }
+                None => {
+                    let _ = fs::remove_file(&bench_path);
+                    report.bench = true;
+                }
             }
         }
 
+        report.tasks = self.scan_tasks()?.1;
         report.waiters = self.scan_waiters()?.1;
         report.observers = self.scan_observers()?.1;
         Ok(report)
     }
 
     /// Emergency recovery: clear every record that can make the queue look busy,
-    /// including owners that still look alive. The kernel mutex stays the source
-    /// of truth for exclusion, and an abandoned mutex is recovered by the next
-    /// waiter, so this cannot corrupt the lock itself.
+    /// including owners that still look alive, and resume any frozen processes.
     pub fn force_clear(&self) -> Result<ReapReport> {
         let mut report = self.reap()?;
 
@@ -508,14 +780,29 @@ impl StateStorage {
             report.lock = true;
         }
         if self.bench_file_path().exists() {
+            if let Some(bench) = load_json_file::<BenchState>(&self.bench_file_path()) {
+                report.unfrozen += unfreeze_orphaned_bench(&bench);
+            }
             let _ = fs::remove_file(self.bench_file_path());
             report.bench = true;
         }
         if self.pause_file_path().exists() {
+            if let Some(pause) = load_json_file::<PauseState>(&self.pause_file_path())
+                && !pause.frozen_identities.is_empty()
+            {
+                let freezer = ProcessFreezer::new();
+                report.unfrozen += freezer
+                    .resume_identities(&pause.frozen_identities)
+                    .unwrap_or(0);
+            }
             let _ = fs::remove_file(self.pause_file_path());
             report.pause = true;
         }
 
+        for pid in self.task_pids()? {
+            let _ = self.unregister_task(pid);
+            report.tasks += 1;
+        }
         for pid in self.waiter_pids()? {
             let _ = self.unregister_waiter(pid);
             report.waiters += 1;
@@ -525,6 +812,10 @@ impl StateStorage {
             report.observers += 1;
         }
         Ok(report)
+    }
+
+    fn task_pids(&self) -> Result<Vec<u32>> {
+        self.json_pids(&self.root_dir.join("tasks"))
     }
 
     fn waiter_pids(&self) -> Result<Vec<u32>> {
@@ -551,16 +842,16 @@ impl StateStorage {
         Ok(pids)
     }
 
+    fn scan_tasks(&self) -> Result<(Vec<TaskState>, u32)> {
+        self.scan_records::<TaskState>(&self.root_dir.join("tasks"), task_record_is_live)
+    }
+
     fn scan_waiters(&self) -> Result<(Vec<WaiterState>, u32)> {
-        self.scan_records::<WaiterState>(&self.root_dir.join("waiters"), |state| {
-            waiter_record_is_live(state)
-        })
+        self.scan_records::<WaiterState>(&self.root_dir.join("waiters"), waiter_record_is_live)
     }
 
     fn scan_observers(&self) -> Result<(Vec<LockState>, u32)> {
-        self.scan_records::<LockState>(&self.root_dir.join("observers"), |state| {
-            observer_record_is_live(state)
-        })
+        self.scan_records::<LockState>(&self.root_dir.join("observers"), observer_record_is_live)
     }
 
     fn scan_records<T: DeserializeOwned>(
@@ -588,6 +879,80 @@ impl StateStorage {
         }
         Ok((list, reaped))
     }
+}
+
+/// Pure admission logic used by `StateStorage::can_admit` and unit tests.
+pub fn evaluate_admission(
+    active_tasks: &[TaskState],
+    waiters: &[WaiterState],
+    my_pid: u32,
+    weight: u32,
+    scope: Option<&str>,
+    now: DateTime<Utc>,
+) -> bool {
+    // 1. Scope mutual exclusion holds regardless of Budget or Yielding state.
+    if let Some(req_scope) = scope
+        && active_tasks
+            .iter()
+            .any(|t| t.scope.as_deref() == Some(req_scope))
+    {
+        return false;
+    }
+
+    // 2. Budget check: Yielding tasks lend their budget (contribute 0).
+    let effective_used = StateStorage::effective_budget_used(active_tasks);
+    if effective_used.saturating_add(weight) > BUDGET_TOTAL {
+        return false;
+    }
+
+    // 3. FIFO + bounded backfill: check waiters ahead of us in queue order.
+    let mut sorted: Vec<&WaiterState> = waiters.iter().collect();
+    sorted.sort_by_key(|w| w.queued_at);
+
+    for earlier in sorted {
+        if earlier.pid == my_pid {
+            break;
+        }
+        // Same-scope earlier waiter always takes strict FIFO precedence.
+        if scope.is_some() && earlier.scope.as_deref() == scope {
+            return false;
+        }
+        // If an earlier waiter has waited past the starvation cap, block backfill.
+        let waited_secs = (now.timestamp() - earlier.queued_at.timestamp()).max(0) as u64;
+        if waited_secs >= BACKFILL_STARVATION_SECS {
+            return false;
+        }
+        // If the earlier waiter could also fit right now, let it go first.
+        let earlier_scope_busy = earlier
+            .scope
+            .as_deref()
+            .is_some_and(|es| active_tasks.iter().any(|t| t.scope.as_deref() == Some(es)));
+        if !earlier_scope_busy && effective_used.saturating_add(earlier.weight) <= BUDGET_TOTAL {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn unfreeze_orphaned_bench(stale: &BenchState) -> u32 {
+    if stale.frozen_identities.is_empty() {
+        return 0;
+    }
+    let freezer = ProcessFreezer::new();
+    freezer
+        .resume_identities(&stale.frozen_identities)
+        .unwrap_or(0)
+}
+
+fn task_record_is_live(state: &TaskState) -> bool {
+    record_is_live(
+        state.identity,
+        state.pid,
+        Some(system_time_from_unix_secs(state.start_time.timestamp())),
+        state.heartbeat,
+        LOCK_LEASE,
+    )
 }
 
 fn lock_record_is_live(state: &LockState) -> bool {
@@ -689,9 +1054,45 @@ mod tests {
     use super::*;
 
     fn dead_pid() -> u32 {
-        // A PID that cannot be in use: process IDs are 4-byte multiples of 4 on
-        // Windows, and this value is far beyond any real allocation.
         u32::MAX - 3
+    }
+
+    fn sample_task(pid: u32, weight: u32, scope: Option<&str>, state: ActivityState) -> TaskState {
+        TaskState {
+            pid,
+            start_time: Utc::now(),
+            command: "cargo build".into(),
+            description: "cargo build".into(),
+            cwd: ".".into(),
+            priority: "Idle".into(),
+            cpu_rate: 100,
+            weight,
+            scope: scope.map(String::from),
+            activity_state: state,
+            cpu_pct: 0.0,
+            low_cpu_secs: 0,
+            identity: None,
+            heartbeat: Some(Utc::now()),
+        }
+    }
+
+    fn sample_waiter(
+        pid: u32,
+        weight: u32,
+        scope: Option<&str>,
+        queued_at: DateTime<Utc>,
+    ) -> WaiterState {
+        WaiterState {
+            pid,
+            queued_at,
+            command: "cargo test".into(),
+            description: "cargo test".into(),
+            cwd: ".".into(),
+            weight,
+            scope: scope.map(String::from),
+            identity: None,
+            heartbeat: Some(queued_at),
+        }
     }
 
     #[test]
@@ -705,7 +1106,7 @@ mod tests {
     fn identity_mismatch_is_reported_as_reused() {
         let me = std::process::id();
         let Some(actual) = ProcessIdentity::capture(me) else {
-            return; // unavailable without process query rights
+            return;
         };
         let forged = ProcessIdentity {
             pid: me,
@@ -723,9 +1124,73 @@ mod tests {
             command: "cargo build".into(),
             description: "cargo build".into(),
             cwd: ".".into(),
+            weight: 100,
+            scope: None,
             identity: None,
             heartbeat: None,
         };
         assert!(!waiter_record_is_live(&waiter));
+    }
+
+    #[test]
+    fn yielding_task_lends_budget_to_heavy_waiter() {
+        let now = Utc::now();
+        let active = vec![sample_task(10, 100, None, ActivityState::Yielding)];
+        let waiters = vec![sample_waiter(20, 100, None, now)];
+        assert!(evaluate_admission(&active, &waiters, 20, 100, None, now));
+    }
+
+    #[test]
+    fn scope_blocks_even_when_holder_is_yielding() {
+        let now = Utc::now();
+        let active = vec![sample_task(
+            10,
+            100,
+            Some("repo-a"),
+            ActivityState::Yielding,
+        )];
+        let waiters = vec![sample_waiter(20, 25, Some("repo-a"), now)];
+        assert!(!evaluate_admission(
+            &active,
+            &waiters,
+            20,
+            25,
+            Some("repo-a"),
+            now
+        ));
+    }
+
+    #[test]
+    fn bounded_backfill_allows_light_waiter_until_starvation_cap() {
+        let now = Utc::now();
+        let active = vec![sample_task(10, 50, None, ActivityState::Active)];
+
+        // Head-of-line heavy waiter waited 10s (< 60s): light waiter may backfill.
+        let waiters_fresh = vec![
+            sample_waiter(20, 100, None, now - chrono::Duration::seconds(10)),
+            sample_waiter(30, 25, None, now - chrono::Duration::seconds(2)),
+        ];
+        assert!(evaluate_admission(
+            &active,
+            &waiters_fresh,
+            30,
+            25,
+            None,
+            now
+        ));
+
+        // Head-of-line heavy waiter waited 65s (>= 60s): backfill is blocked.
+        let waiters_starving = vec![
+            sample_waiter(20, 100, None, now - chrono::Duration::seconds(65)),
+            sample_waiter(30, 25, None, now - chrono::Duration::seconds(2)),
+        ];
+        assert!(!evaluate_admission(
+            &active,
+            &waiters_starving,
+            30,
+            25,
+            None,
+            now
+        ));
     }
 }

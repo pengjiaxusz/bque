@@ -15,14 +15,20 @@ use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForS
 /// Base names of the global kernel mutexes. The session-local `Local\` prefix
 /// makes them per-remote-session, which is what the queue wants.
 pub const BUILD_MUTEX_BASE: &str = "Bque_Global_Build_Lock";
+pub const COORD_MUTEX_BASE: &str = "Bque_Coord_Lock";
 pub const BENCH_MUTEX_BASE: &str = "Bque_Benchmark_Lock";
 
 /// Namespace override used by tests (and by parallel experiments) so they can
 /// hold a private queue instead of the machine-wide one.
 pub const MUTEX_NAMESPACE_ENV: &str = "BQUE_MUTEX_NAMESPACE";
 
+#[allow(dead_code)]
 pub fn build_mutex_name() -> String {
     scoped_mutex_name(BUILD_MUTEX_BASE)
+}
+
+pub fn coord_mutex_name() -> String {
+    scoped_mutex_name(COORD_MUTEX_BASE)
 }
 
 pub fn bench_mutex_name() -> String {
@@ -47,6 +53,7 @@ pub struct NamedMutexGuard {
 }
 
 impl NamedMutexGuard {
+    #[allow(dead_code)]
     pub fn was_abandoned(&self) -> bool {
         self.was_abandoned
     }
@@ -143,7 +150,12 @@ impl NamedMutex {
             }
 
             let start = Instant::now();
-            let chunk_ms = 1000u32;
+            let chunk_ms =
+                if total_timeout > Duration::ZERO && total_timeout < Duration::from_secs(1) {
+                    total_timeout.as_millis().max(1) as u32
+                } else {
+                    1000u32
+                };
 
             loop {
                 let wait_res = WaitForSingleObject(handle, chunk_ms);
@@ -203,7 +215,7 @@ impl NamedMutex {
         let fd = file.as_raw_fd();
         let start = Instant::now();
         let mut last_tick = Instant::now();
-        let poll_interval = Duration::from_millis(50);
+        let poll_interval = Duration::from_millis(25);
         let tick_interval = Duration::from_secs(1);
 
         loop {

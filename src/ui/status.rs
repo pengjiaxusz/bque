@@ -1,14 +1,12 @@
 use super::color::{ColorTheme, compact_path, format_duration_secs, truncate_str};
-use crate::state::FullQueueStatus;
+use crate::state::{ActivityState, FullQueueStatus};
 use chrono::{DateTime, Local, Utc};
 
 /// A holder older than this is almost always a dev server or watch loop that
-/// should have run as an observer instead of occupying the global lock.
+/// should have run as an observer instead of occupying queue budget.
 pub const LONG_HOLD_HINT_SECS: u64 = 30 * 60;
 
-/// Width limit for the status card. Wider than the old one-line layout because
-/// every task now carries its working directory and command line, which is what
-/// tells a developer *which* worktree a job belongs to.
+/// Width limit for the status card.
 pub const MAX_CARD_WIDTH: usize = 100;
 
 /// Room left for a detail value after the `│` gutter, indent and 4-char label.
@@ -21,7 +19,7 @@ const LIVE_PREFIX_WIDTH: usize = 43;
 
 /// Description budget on the task headline, leaving room for the PID, timer and
 /// the `(You)` marker.
-const HEADLINE_BUDGET: usize = MAX_CARD_WIDTH - 40;
+const HEADLINE_BUDGET: usize = MAX_CARD_WIDTH - 44;
 
 pub fn render_full_dashboard(
     status: &FullQueueStatus,
@@ -41,7 +39,7 @@ pub fn render_full_dashboard(
             theme,
             theme.bold_yellow("🧪 ACTIVE BENCHMARK IN PROGRESS"),
         ));
-        body_lines.push(headline(theme, &bench.pid, &bench.description));
+        body_lines.push(headline(theme, &bench.pid, &bench.description, None));
         push_details(
             &mut body_lines,
             theme,
@@ -54,8 +52,13 @@ pub fn render_full_dashboard(
             format!("running {}", format_duration_secs(elapsed)),
             format!("started {}", clock(bench.start_time)),
         ];
-        if !bench.frozen_pids.is_empty() {
-            meta.push(format!("frozen {} process(es)", bench.frozen_pids.len()));
+        let frozen_len = if !bench.frozen_identities.is_empty() {
+            bench.frozen_identities.len()
+        } else {
+            bench.frozen_pids.len()
+        };
+        if frozen_len > 0 {
+            meta.push(format!("frozen {} process(es)", frozen_len));
         }
         body_lines.push(meta_line(theme, &meta));
         need_spacer = true;
@@ -76,58 +79,100 @@ pub fn render_full_dashboard(
             theme.bold_white(&pause.reason)
         ));
         let elapsed = (Utc::now().timestamp() - pause.paused_at.timestamp()).max(0) as u64;
+        let frozen_suffix = if pause.frozen_identities.is_empty() {
+            String::new()
+        } else {
+            format!(" · frozen {} process(es)", pause.frozen_identities.len())
+        };
         body_lines.push(format!(
-            "{}     Paused by PID: {} ({} ago)",
+            "{}     Paused by PID: {} ({} ago{})",
             theme.dim("│"),
             theme.bold_cyan(&pause.paused_by_pid.to_string()),
-            theme.dim(&format_duration_secs(elapsed))
+            theme.dim(&format_duration_secs(elapsed)),
+            theme.dim(&frozen_suffix)
         ));
         need_spacer = true;
     }
 
-    // 3. Active Lock Holder
+    // 3. Active Tasks & Budget
     if need_spacer {
         body_lines.push(theme.dim("│"));
     }
-    if let Some(lock) = &status.active_lock {
-        let elapsed = (Utc::now().timestamp() - lock.start_time.timestamp()).max(0) as u64;
+    if !status.active_tasks.is_empty() {
+        let budget_label = if status.oversubscribed {
+            format!(
+                "🏃 ACTIVE TASKS ({}) · Budget {}/{} (OVERSUBSCRIBED)",
+                status.active_tasks.len(),
+                status.budget_used,
+                status.budget_total
+            )
+        } else {
+            format!(
+                "🏃 ACTIVE TASKS ({}) · Budget {}/{}",
+                status.active_tasks.len(),
+                status.budget_used,
+                status.budget_total
+            )
+        };
         body_lines.push(section_title(
             theme,
-            theme.bold_green("🏃 ACTIVE BUILD LOCK"),
+            if status.oversubscribed {
+                theme.bold_yellow(&budget_label)
+            } else {
+                theme.bold_green(&budget_label)
+            },
         ));
-        body_lines.push(headline(theme, &lock.pid, &lock.description));
-        push_details(
-            &mut body_lines,
-            theme,
-            Some(&lock.cwd),
-            &lock.command,
-            &lock.description,
-        );
-        body_lines.push(meta_line(
-            theme,
-            &[
-                lock.priority.clone(),
-                format!("CPU {}% (soft-cap)", lock.cpu_rate),
-                format!("held {}", format_duration_secs(elapsed)),
-                format!("started {}", clock(lock.start_time)),
-            ],
-        ));
-        if elapsed >= LONG_HOLD_HINT_SECS {
-            body_lines.push(format!(
-                "{}     {}",
-                theme.dim("│"),
-                theme.yellow(
-                    "💡 Holder is long-running: dev servers and watch loops should use --observer"
-                )
+
+        for task in &status.active_tasks {
+            let elapsed = (Utc::now().timestamp() - task.start_time.timestamp()).max(0) as u64;
+            let badge = match task.activity_state {
+                ActivityState::Active => Some(theme.bold_green("[ACTIVE]")),
+                ActivityState::Yielding => Some(theme.bold_yellow("[YIELDING]")),
+            };
+            body_lines.push(headline(
+                theme,
+                &task.pid,
+                &task.description,
+                badge.as_deref(),
             ));
+            push_details(
+                &mut body_lines,
+                theme,
+                Some(&task.cwd),
+                &task.command,
+                &task.description,
+            );
+            let mut meta = vec![
+                format!("w={}", task.weight),
+                format!("CPU {:.1}% (cap {}%)", task.cpu_pct, task.cpu_rate),
+                task.priority.clone(),
+                format!("held {}", format_duration_secs(elapsed)),
+                format!("started {}", clock(task.start_time)),
+            ];
+            if let Some(scope) = &task.scope {
+                meta.insert(1, format!("scope={}", scope));
+            }
+            body_lines.push(meta_line(theme, &meta));
+            if elapsed >= LONG_HOLD_HINT_SECS {
+                body_lines.push(format!(
+                    "{}     {}",
+                    theme.dim("│"),
+                    theme.yellow(
+                        "💡 Task is long-running: dev servers and watch loops should use --observer"
+                    )
+                ));
+            }
         }
     } else {
         body_lines.push(section_title(
             theme,
-            theme.bold_green("🟢 BUILD QUEUE IDLE"),
+            theme.bold_green(&format!(
+                "🟢 BUILD QUEUE IDLE · Budget 0/{}",
+                status.budget_total
+            )),
         ));
         body_lines.push(format!(
-            "{}     (No active builds. Lock is immediately available)",
+            "{}     (No active tasks. Full budget is immediately available)",
             theme.dim("│")
         ));
     }
@@ -182,10 +227,14 @@ pub fn render_full_dashboard(
                 &w.command,
                 &w.description,
             );
-            body_lines.push(meta_line(
-                theme,
-                &[format!("queued {}", clock(w.queued_at))],
-            ));
+            let mut wmeta = vec![
+                format!("w={}", w.weight),
+                format!("queued {}", clock(w.queued_at)),
+            ];
+            if let Some(scope) = &w.scope {
+                wmeta.insert(1, format!("scope={}", scope));
+            }
+            body_lines.push(meta_line(theme, &wmeta));
         }
     }
 
@@ -199,7 +248,6 @@ pub fn render_full_dashboard(
         ));
         for obs in &status.observers {
             let elapsed = (Utc::now().timestamp() - obs.start_time.timestamp()).max(0) as u64;
-            // Pad before colouring: escape sequences would defeat the alignment.
             let time_str = format!("[{:>5}]", format_duration_secs(elapsed));
             body_lines.push(format!(
                 "{}     PID {:<6} {} {}",
@@ -244,19 +292,15 @@ pub fn render_full_dashboard(
         ));
     }
 
-    // Determine target card width dynamically based on content
     let content_max = body_lines
         .iter()
         .map(|l| super::color::strip_ansi(l).chars().count())
         .max()
         .unwrap_or(50);
 
-    // Build top and bottom lines with exact matched length
     let (top_line, total_width) = match live_header {
         Some((spinner, elapsed_secs)) => {
             let time_str = format_duration_secs(elapsed_secs);
-            // `╭─ bque • Global Build Queue & Governor ── ` is 43 plain chars; then
-            // the spinner, " [", the timer and "] ".
             let prefix_len = LIVE_PREFIX_WIDTH + 1 + 2 + time_str.chars().count() + 2;
             let target = (content_max + 3).max(prefix_len + 4).min(MAX_CARD_WIDTH);
             let trailing = target.saturating_sub(prefix_len).max(3);
@@ -307,26 +351,28 @@ pub fn render_full_dashboard(
     result
 }
 
-/// Section heading: `│  <title>`, with the title already coloured by the caller.
 fn section_title(theme: &ColorTheme, title: String) -> String {
     format!("{}  {}", theme.dim("│"), title)
 }
 
-/// `│     PID 1234 • task summary`
-fn headline(theme: &ColorTheme, pid: &u32, description: &str) -> String {
-    format!(
-        "{}     PID {} • {}",
-        theme.dim("│"),
-        theme.bold_cyan(&pid.to_string()),
-        theme.bold_white(&truncate_str(description, HEADLINE_BUDGET))
-    )
+fn headline(theme: &ColorTheme, pid: &u32, description: &str, badge: Option<&str>) -> String {
+    match badge {
+        Some(b) => format!(
+            "{}     {} PID {} • {}",
+            theme.dim("│"),
+            b,
+            theme.bold_cyan(&pid.to_string()),
+            theme.bold_white(&truncate_str(description, HEADLINE_BUDGET))
+        ),
+        None => format!(
+            "{}     PID {} • {}",
+            theme.dim("│"),
+            theme.bold_cyan(&pid.to_string()),
+            theme.bold_white(&truncate_str(description, HEADLINE_BUDGET))
+        ),
+    }
 }
 
-/// Working directory and command line for one task.
-///
-/// The directory is the part that answers "whose job is this?" once several
-/// worktrees of the same repository share one machine-wide queue, so it is
-/// always rendered, never tucked behind a flag.
 fn push_details(
     lines: &mut Vec<String>,
     theme: &ColorTheme,
@@ -342,7 +388,6 @@ fn push_details(
             theme.cyan(&compact_path(cwd, DETAIL_BUDGET))
         ));
     }
-    // Only repeat the command when a custom description hides it.
     if !command.trim().is_empty() && command != description {
         lines.push(format!(
             "{}       {} {}",
@@ -353,7 +398,6 @@ fn push_details(
     }
 }
 
-/// `│       meta priority · CPU 60% (soft-cap) · held 21m 03s · started 06:40:12`
 fn meta_line(theme: &ColorTheme, parts: &[String]) -> String {
     format!(
         "{}       {} {}",

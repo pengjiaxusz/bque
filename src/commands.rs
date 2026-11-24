@@ -1,11 +1,14 @@
 use crate::cli::{CleanArgs, LowResourcePolicy, PauseArgs, ProbeArgs, RunArgs, StatusArgs};
 use crate::governor::{ActivityGovernorConfig, GovernorWorker, evaluate_target_cpu_rate};
-use crate::job::{CpuTopology, JobObject, apply_process_affinity, apply_process_priority};
-use crate::lock::{NamedMutex, build_mutex_name};
+use crate::job::{
+    CpuTopology, JobObject, ProcessFreezer, apply_process_affinity, apply_process_priority,
+};
+use crate::lock::{NamedMutex, coord_mutex_name};
 use crate::probe::{evaluate_preflight, format_probe_summary, probe_host};
-use crate::runner::execute_child_command;
+use crate::runner::{MonitorConfig, execute_child_command, execute_child_command_monitored};
+use crate::state::process::ProcessIdentity;
 use crate::state::{
-    LockState, PauseState, StateHeartbeat, StateStorage, WaiterState, is_pid_alive,
+    LockState, PauseState, StateStorage, TaskState, WaiterState, is_pid_alive,
     storage::WAITER_HEARTBEAT_INTERVAL,
 };
 use crate::ui::{ColorTheme, LiveProgressReporter, render_full_dashboard};
@@ -77,7 +80,6 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
     let my_pid = std::process::id();
     let storage = StateStorage::new()?;
     let desc = args.desc.clone().unwrap_or_else(|| args.command.join(" "));
-
     let current_dir_str = crate::runner::display_cwd(args.cwd.as_deref());
 
     // Check reentrancy: if already running inside an active bque session, pass through directly
@@ -91,15 +93,40 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
         return execute_child_command(&args.command, args.cwd.as_deref(), None);
     }
 
-    let _lock_guard = if !args.observer {
-        // Register as waiter
+    // Calculate initial CPU rate (excluding active bque tasks so we don't self-throttle)
+    let target_rate = if let Some(rate) = args.cpu_rate {
+        rate
+    } else {
+        let config = ActivityGovernorConfig::default();
+        let bque_cpu = storage.total_active_cpu_pct();
+        crate::governor::activity::evaluate_target_cpu_rate_excluding(&config, bque_cpu)
+    };
+
+    if args.observer {
+        let obs_state = LockState::record(
+            my_pid,
+            args.command.join(" "),
+            desc.clone(),
+            current_dir_str,
+            format!("{:?}", args.priority),
+            target_rate,
+            true,
+        );
+        storage.register_observer(&obs_state)?;
+    } else {
         let waiter = WaiterState::record(
             my_pid,
             args.command.join(" "),
             desc.clone(),
             current_dir_str.clone(),
+            args.weight,
+            args.scope.clone(),
         );
         storage.register_waiter(&waiter)?;
+        let _waiter_guard = WaiterCleanupGuard {
+            storage: storage.clone(),
+            pid: my_pid,
+        };
 
         let timeout = if args.timeout == 0 {
             Duration::ZERO
@@ -107,125 +134,68 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
             Duration::from_secs(args.timeout)
         };
 
-        let lock_name = build_mutex_name();
-        let mutex = NamedMutex::new(lock_name.clone());
+        let coord_name = coord_mutex_name();
+        let coord_mutex = NamedMutex::new(coord_name.clone());
         let mut reporter = LiveProgressReporter::new(my_pid, desc.clone());
         let start_wait = Instant::now();
         let mut last_heartbeat = Instant::now();
 
-        // Loop until not paused, no benchmark active, and build mutex acquired
-        let guard = loop {
+        loop {
             if timeout > Duration::ZERO && start_wait.elapsed() >= timeout {
-                let _ = storage.unregister_waiter(my_pid);
                 return Err(anyhow!(
-                    "Timed out waiting for lock '{}' after {:?}",
-                    lock_name,
+                    "Timed out waiting for queue budget after {:?}",
                     timeout
                 ));
             }
 
-            // Heal the queue before deciding whether anything blocks us: a record
-            // whose owner exited (or whose PID was recycled) must never keep this
-            // process waiting, and must disappear from the dashboard immediately.
-            let _ = storage.reap();
+            let admitted = if let Ok(_coord) =
+                coord_mutex.acquire_with_progress(Duration::from_millis(500), |_| Ok(()))
+            {
+                let _ = storage.reap();
 
-            if last_heartbeat.elapsed() >= WAITER_HEARTBEAT_INTERVAL {
-                let _ = storage.touch_waiter(my_pid);
-                last_heartbeat = Instant::now();
-            }
+                if last_heartbeat.elapsed() >= WAITER_HEARTBEAT_INTERVAL {
+                    let _ = storage.touch_waiter(my_pid);
+                    last_heartbeat = Instant::now();
+                }
 
-            // 1. Check if paused or benchmark active
-            let is_blocked = {
-                let bench = storage.load_bench_state()?;
-                let pause = storage.load_pause_state()?;
-                bench.is_some() || pause.is_some()
+                if storage.can_admit(my_pid, args.weight, args.scope.as_deref())? {
+                    let task_state = TaskState::record(
+                        my_pid,
+                        args.command.join(" "),
+                        desc.clone(),
+                        current_dir_str.clone(),
+                        format!("{:?}", args.priority),
+                        target_rate,
+                        args.weight,
+                        args.scope.clone(),
+                    );
+                    storage.register_task(&task_state)?;
+                    let _ = storage.unregister_waiter(my_pid);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
             };
 
-            if is_blocked {
-                if let Ok(status) = storage.get_full_status() {
-                    reporter.tick_queue(&status, start_wait.elapsed().as_secs());
-                }
-                std::thread::sleep(Duration::from_millis(500));
-                continue;
+            if admitted {
+                reporter.finish_acquired(start_wait.elapsed().as_secs());
+                break;
             }
 
-            // 2. Attempt to acquire build mutex with 500ms timeout chunk
-            let chunk_timeout = Duration::from_millis(500);
-            match mutex.acquire_with_progress(chunk_timeout, |_| Ok(())) {
-                Ok(guard) => {
-                    // Double check bench/pause wasn't initiated in the instant of acquisition
-                    if storage.load_bench_state()?.is_none()
-                        && storage.load_pause_state()?.is_none()
-                    {
-                        break guard;
-                    }
-                    drop(guard);
-                    if let Ok(status) = storage.get_full_status() {
-                        reporter.tick_queue(&status, start_wait.elapsed().as_secs());
-                    }
-                }
-                Err(_) => {
-                    if let Ok(status) = storage.get_full_status() {
-                        reporter.tick_queue(&status, start_wait.elapsed().as_secs());
-                    }
-                }
+            if let Ok(status) = storage.get_full_status() {
+                reporter.tick_queue(&status, start_wait.elapsed().as_secs());
             }
-        };
-
-        let _ = storage.unregister_waiter(my_pid);
-        reporter.finish_acquired(start_wait.elapsed().as_secs());
-
-        if guard.was_abandoned() {
-            println!(
-                "{} {} Previous lock owner exited abnormally. Mutex ownership safely recovered.",
-                reporter.theme.badge_bque(),
-                reporter.theme.bold_yellow("⚠️")
-            );
+            std::thread::sleep(Duration::from_millis(250));
         }
-
-        Some(guard)
-    } else {
-        None
-    };
-
-    // Calculate initial CPU rate
-    let target_rate = if let Some(rate) = args.cpu_rate {
-        rate
-    } else {
-        let config = ActivityGovernorConfig::default();
-        evaluate_target_cpu_rate(&config)
-    };
-
-    // Record active state
-    let active_state = LockState::record(
-        my_pid,
-        args.command.join(" "),
-        desc.clone(),
-        current_dir_str,
-        format!("{:?}", args.priority),
-        target_rate,
-        args.observer,
-    );
-
-    if args.observer {
-        storage.register_observer(&active_state)?;
-    } else {
-        storage.save_lock_state(&active_state)?;
     }
 
-    // Keep proving this record is alive for as long as the child runs, so a
-    // stale-looking entry can only ever appear after this process is gone.
-    // Declaration order matters: the heartbeat is declared after the record
-    // guard, so it stops before the record is removed and cannot resurrect it.
+    // Remove the active task/observer record on every exit path, including errors and panics.
     let _record_guard = ActiveRecordGuard {
         storage: storage.clone(),
         pid: my_pid,
         observer: args.observer,
-    };
-    let _heartbeat = if args.observer {
-        Some(StateHeartbeat::start_observer(storage.clone(), my_pid))
-    } else {
-        Some(StateHeartbeat::start_lock(storage.clone(), my_pid))
     };
 
     // Set process priority class (Idle by default)
@@ -277,9 +247,17 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
 
     // Start dynamic governor if enabled and no fixed rate specified
     let _governor = if !args.no_governor && args.cpu_rate.is_none() {
-        job_object
-            .as_ref()
-            .map(|job| GovernorWorker::start(job.clone(), target_rate, args.hard_cap))
+        job_object.as_ref().map(|job| {
+            GovernorWorker::start(
+                job.clone(),
+                storage.clone(),
+                my_pid,
+                args.weight,
+                args.observer,
+                target_rate,
+                args.hard_cap,
+            )
+        })
     } else {
         None
     };
@@ -289,17 +267,44 @@ pub fn handle_run(args: RunArgs) -> Result<i32> {
         std::env::set_var("BQUE_ACTIVE_PID", my_pid.to_string());
     }
 
-    // Execute wrapped command. The record guard removes our state on every exit
-    // path, including errors and panics.
-    let exit_code =
-        execute_child_command(&args.command, args.cwd.as_deref(), job_object.as_deref())?;
+    let monitor_cfg = MonitorConfig {
+        storage: storage.clone(),
+        pid: my_pid,
+        observer: args.observer,
+        yield_after_secs: if args.no_yield {
+            None
+        } else {
+            Some(args.yield_after)
+        },
+        stall_timeout_secs: args.stall_timeout,
+        max_duration_secs: args.max_duration,
+    };
+
+    let exit_code = execute_child_command_monitored(
+        &args.command,
+        args.cwd.as_deref(),
+        job_object,
+        monitor_cfg,
+    )?;
 
     crate::update::check_and_print_notice(&theme);
 
     Ok(exit_code)
 }
 
-/// Removes the active lock/observer record when the build ends, however it ends.
+/// Ensures a waiter file is removed if admission times out or errors.
+struct WaiterCleanupGuard {
+    storage: StateStorage,
+    pid: u32,
+}
+
+impl Drop for WaiterCleanupGuard {
+    fn drop(&mut self) {
+        let _ = self.storage.unregister_waiter(self.pid);
+    }
+}
+
+/// Removes the active task/observer record when the build ends, however it ends.
 struct ActiveRecordGuard {
     storage: StateStorage,
     pid: u32,
@@ -311,7 +316,7 @@ impl Drop for ActiveRecordGuard {
         let _ = if self.observer {
             self.storage.unregister_observer(self.pid)
         } else {
-            self.storage.clear_lock_state(Some(self.pid))
+            self.storage.unregister_task(self.pid)
         };
     }
 }
@@ -361,10 +366,30 @@ pub fn handle_status(args: StatusArgs) -> Result<()> {
 
 pub fn handle_pause(args: PauseArgs) -> Result<()> {
     let storage = StateStorage::new()?;
+    let _ = storage.reap();
+    let freezer = ProcessFreezer::new();
+
+    let mut frozen_identities: Vec<ProcessIdentity> = Vec::new();
+    for task in storage.list_active_tasks().unwrap_or_default() {
+        if let Ok(ids) = freezer.suspend_process_tree_identities(task.pid) {
+            frozen_identities.extend(ids);
+        }
+    }
+    if !args.keep_observers {
+        for obs in storage.list_observers().unwrap_or_default() {
+            if let Ok(ids) = freezer.suspend_process_tree_identities(obs.pid) {
+                frozen_identities.extend(ids);
+            }
+        }
+    }
+
+    let frozen_count = frozen_identities.len();
     let state = PauseState {
         paused_at: Utc::now(),
         reason: args.reason.clone(),
         paused_by_pid: std::process::id(),
+        frozen_identities,
+        keep_observers: args.keep_observers,
     };
     storage.save_pause_state(&state)?;
     let theme = ColorTheme::new();
@@ -373,15 +398,38 @@ pub fn handle_pause(args: PauseArgs) -> Result<()> {
         theme.badge_bque()
     );
     println!("  Reason: {}", theme.bold_white(&args.reason));
+    if frozen_count > 0 {
+        println!(
+            "  Frozen: {} active process(es)",
+            theme.bold_cyan(&frozen_count.to_string())
+        );
+    }
     println!("  Run '{}' to unpause.", theme.cyan("bque resume"));
     Ok(())
 }
 
 pub fn handle_resume() -> Result<()> {
     let storage = StateStorage::new()?;
+    let mut resumed_count = 0;
+    if let Some(pause) = storage.load_pause_state()?
+        && !pause.frozen_identities.is_empty()
+    {
+        let freezer = ProcessFreezer::new();
+        resumed_count = freezer
+            .resume_identities(&pause.frozen_identities)
+            .unwrap_or(0);
+    }
     storage.clear_pause_state()?;
     let theme = ColorTheme::new();
-    println!("{} ▶️  Background builds resumed.", theme.badge_bque());
+    if resumed_count > 0 {
+        println!(
+            "{} ▶️  Background builds resumed ({} process(es) unfrozen).",
+            theme.badge_bque(),
+            theme.bold_green(&resumed_count.to_string())
+        );
+    } else {
+        println!("{} ▶️  Background builds resumed.", theme.badge_bque());
+    }
     Ok(())
 }
 
@@ -396,11 +444,6 @@ pub fn handle_clean(args: CleanArgs) -> Result<()> {
             theme.badge_bque(),
             theme.bold_cyan(&report.describe())
         );
-        println!(
-            "  {} The kernel mutex remains authoritative: a live build keeps running,",
-            theme.bold_yellow("⚠️")
-        );
-        println!("     and the next waiter automatically recovers an abandoned lock.");
         return Ok(());
     }
 
@@ -412,4 +455,9 @@ pub fn handle_clean(args: CleanArgs) -> Result<()> {
         theme.dim(&report.describe())
     );
     Ok(())
+}
+
+#[allow(dead_code)]
+fn _keep_evaluate_import() {
+    let _ = evaluate_target_cpu_rate;
 }
