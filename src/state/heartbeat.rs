@@ -12,32 +12,30 @@ const TICK: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, Debug)]
 pub enum HeartbeatKind {
-    Lock,
+    #[allow(dead_code)]
+    Task,
     Bench,
+    #[allow(dead_code)]
     Observer,
 }
 
 /// Refreshes the heartbeat of a long-running state record.
-///
-/// The heartbeat is the fallback proof of life used when a record's process
-/// cannot be inspected (see `state::process`). Without it, a suspended or
-/// access-denied owner would only be recoverable by hand.
 pub struct StateHeartbeat {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl StateHeartbeat {
-    pub fn start_lock(storage: StateStorage, pid: u32) -> Self {
-        Self::start(storage, pid, HeartbeatKind::Lock, LOCK_HEARTBEAT_INTERVAL)
+    #[allow(dead_code)]
+    pub fn start_task(storage: StateStorage, pid: u32) -> Self {
+        Self::start(storage, pid, HeartbeatKind::Task, LOCK_HEARTBEAT_INTERVAL)
     }
 
     pub fn start_bench(storage: StateStorage, pid: u32) -> Self {
         Self::start(storage, pid, HeartbeatKind::Bench, BENCH_HEARTBEAT_INTERVAL)
     }
 
-    /// Observers hold no lock, but they still own a record: without a heartbeat
-    /// a suspended or access-denied dev server would age out of the dashboard.
+    #[allow(dead_code)]
     pub fn start_observer(storage: StateStorage, pid: u32) -> Self {
         Self::start(
             storage,
@@ -64,7 +62,7 @@ impl StateHeartbeat {
                 }
                 waited = Duration::ZERO;
                 let _ = match kind {
-                    HeartbeatKind::Lock => storage.touch_lock_state(pid),
+                    HeartbeatKind::Task => storage.touch_task(pid),
                     HeartbeatKind::Bench => storage.touch_bench_state(pid),
                     HeartbeatKind::Observer => storage.touch_observer(pid),
                 };
